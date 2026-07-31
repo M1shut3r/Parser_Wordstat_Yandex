@@ -1,0 +1,10 @@
+config.json
+
+progress.json
+block_history.json
+wordstat_results.xlsx
+
+__pycache__/
+*.pyc
+venv/
+.venv/
