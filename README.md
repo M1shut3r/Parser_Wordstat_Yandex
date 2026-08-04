@@ -12,7 +12,7 @@ Desktop application for mass parsing search queries via the Yandex Wordstat API.
 ## Installation
 
 ### Prerequisites
-- Python 3.9 or higher
+- Python 3.11 or higher
 - `pip` package manager
 - API Key and Folder ID from [Yandex Cloud](https://yandex.ru/dev/wordstat/)
 
