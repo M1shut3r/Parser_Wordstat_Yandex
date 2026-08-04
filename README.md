@@ -1,51 +1,67 @@
-# Yandex Wordstat Parser (Layered Architecture)
+# Yandex Wordstat Parser
 
-Yandex Wordstat Parser — десктопное приложение для массового парсинга частотности поисковых запросов с современным GUI. Идеальный инструмент для SEO и контекстологов. Автоматизирует рутину: мультиаккаунтная ротация, умный обход лимитов API (429), безопасное управление ключами и возобновление сессий. Построен на чистой архитектуре.
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![API](https://img.shields.io/badge/API-Yandex%20Wordstat-orange.svg)](https://aistudio.yandex.ru/platform/folders)
+[![GUI](https://img.shields.io/badge/GUI-CustomTkinter-purple.svg)](https://github.com/TomSchimansky/CustomTkinter)
 
-![Демонстрация работы](assets/video.gif)
+Desktop application for mass parsing search queries via the Yandex Wordstat API. Built with Python using CustomTkinter. Supports multiple accounts, automatic rate-limit management (HTTP 429), threshold filtering, and exporting results to Excel.
 
-## Архитектура проекта
+![Wordstat Parser Demo](assets/video.gif)
 
-Код строго разделен на слои (Separation of Concerns):
+## Installation
 
-- **`models.py` (Data Layer)**: Отвечает за структуру данных, загрузку/сохранение конфигурации (`config.json`), управление состоянием аккаунтов и логирование блокировок.
-- **`services.py` (Domain/Business Layer)**: Содержит всю бизнес-логику. Включает клиент API (`WordstatAPI`) с механизмом умной ротации аккаунтов и оркестратор обработки (`WordstatProcessor`). Не имеет зависимостей от UI.
-- **`ui.py` (Presentation Layer)**: Графический интерфейс на базе `CustomTkinter`. Отвечает только за отображение данных и взаимодействие с пользователем. Обмен данными с бизнес-слоем происходит через потокобезопасные очереди (`queue.Queue`).
-- **`main.py` (Entry Point)**: Точка входа, инициализирующая приложение.
+### Prerequisites
+- Python 3.9 or higher
+- `pip` package manager
+- API Key and Folder ID from [Yandex Cloud](https://yandex.ru/dev/wordstat/)
 
-## Ключевые возможности
+### Steps
 
-### Интерфейс и UX
-- **Современный GUI**: Стильный темный интерфейс на базе `CustomTkinter` с карточками статистики, табами и кастомной таблицей результатов.
-- **Управление аккаунтами через UI**: Добавление аккаунтов с автоматической проверкой API-ключа, удаление и маскирование ключей в списке.
-- **Гибкие настройки**: Изменение лимитов, задержек и порогов фильтрации прямо в интерфейсе без редактирования кода.
-- **Поддержка буфера обмена**: Кастомные поля ввода (`PasteableEntry`) гарантируют, что `Ctrl+V` / `Cmd+V` работает корректно для длинных API-ключей.
-- **Ручной экспорт**: Отчет не сохраняется автоматически в папку с проектом. После парсинга появляется кнопка **«Сохранить отчет как...»** с системным диалогом выбора пути.
-
-### Логика и Безопасность
-- **Чистая архитектура**: Логика, данные и UI полностью изолированы друг от друга.
-- **Умная ротация и ожидание**: Автоматическое переключение аккаунтов при ошибке 429. Если все аккаунты заблокированы, скрипт анализирует историю блокировок и ждет ровно до момента разблокировки *первого* аккаунта, а не жестко 1 час.
-- **Настраиваемая фильтрация**: Отсев нерелевантных запросов (по умолчанию: обычный > 500, в кавычках > 30). Пороги меняются в настройках.
-- **Потокобезопасность**: GUI не зависает благодаря выносу тяжелых сетевых операций в фоновый поток (`threading`).
-- **Безопасность**: Секретные данные вынесены во внешний `config.json` (создается автоматически при первом запуске).
-- **Resumable Processing**: Поддержка сохранения и возобновления прогресса при сбоях или закрытии приложения.
-
-## Требования
-
-- Python 3.8+
-- Операционная система: Windows, macOS, Linux
-
-## Установка и запуск
-
-1. Клонируйте репозиторий или скачайте исходный код.
-2. Создайте виртуальное окружение:
+1. **Clone the repository**
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/macOS
-   venv\Scripts\activate     # Windows
-3. Установите зависимости 
-   ```bash 
-   pip install -r requirements.txt
-4. Запустите приложение
-   ```bash 
-   python main.py
+   git clone https://github.com/yourusername/wordstat-parser.git
+   cd wordstat-parser
+   ```
+1. **Install the package in editable mode**
+   ```bash
+      pip install -e .
+      pip install -e ".[dev]"
+   ```
+
+### Usage
+Launch the app from anywhere in your terminal:
+   ```bash
+      wordstat_parser
+   ```
+Or run as a module:
+   ```bash
+      python main.py
+   ```
+
+### Running Tests
+```bash
+   pytest tests/
+```
+
+### Project Structure
+
+```bash
+wordstat_parser/
+├── src/wordstat_parser/          # Main package
+│   ├── __init__.py
+│   ├── __main__.py               # Entry point for `python -m ...`
+│   ├── ui.py                     # UI layer (CustomTkinter GUI)
+│   ├── client.py                 # Yandex Wordstat API client + account management
+│   ├── processor.py              # Background query processing and business logic
+│   ├── exporter.py               # Results export to Excel (.xlsx)
+│   ├── config.py                 # Configuration manager and global settings
+│   └── models.py                 # Dataclass models (accounts, results, settings)
+├── tests/                        # Unit tests
+├── images/                       # App assets (screenshots, icons)
+│   └── demo.gif
+├── requirements.txt              # Project dependencies
+├── config.json                   # Local settings and accounts (auto-generated)
+├── block_history.json            # API temporary block history (auto-generated)
+└── README.md
+```
