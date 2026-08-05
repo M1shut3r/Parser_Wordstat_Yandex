@@ -6,7 +6,6 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Optional
 
 import customtkinter as ctk
 
@@ -15,7 +14,6 @@ from .config import ConfigManager
 from .exporter import export_to_excel
 from .models import ParseResult
 from .processor import WordstatProcessor
-
 
 COLORS = {
     "bg": "#121212",
@@ -125,10 +123,7 @@ class AccountDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text=(
-                "API Key и Folder ID используются "
-                "для работы с Yandex Wordstat API."
-            ),
+            text=("API Key и Folder ID используются для работы с Yandex Wordstat API."),
             text_color="gray",
             wraplength=440,
         ).pack(
@@ -297,17 +292,12 @@ class AccountDialog(ctk.CTkToplevel):
             api_key = account.config.api_key
 
             if len(api_key) > 10:
-                masked_key = (
-                    f"{api_key[:6]}..."
-                    f"{api_key[-4:]}"
-                )
+                masked_key = f"{api_key[:6]}...{api_key[-4:]}"
             else:
                 masked_key = "*" * len(api_key)
 
             options.append(
-                f"Аккаунт {index}: "
-                f"{masked_key} | "
-                f"Folder: {account.config.folder_id}"
+                f"Аккаунт {index}: {masked_key} | Folder: {account.config.folder_id}"
             )
 
         return options
@@ -321,11 +311,7 @@ class AccountDialog(ctk.CTkToplevel):
         self.account_combo.set(options[0])
 
         self.delete_button.configure(
-            state=(
-                "normal"
-                if self.config_manager.accounts
-                else "disabled"
-            ),
+            state=("normal" if self.config_manager.accounts else "disabled"),
         )
 
     def _delete_account(self) -> None:
@@ -335,27 +321,18 @@ class AccountDialog(ctk.CTkToplevel):
         selected = self.account_combo.get()
 
         try:
-            account_number = int(
-                selected.split(":")[0]
-                .replace("Аккаунт ", "")
-                .strip()
-            )
+            account_number = int(selected.split(":")[0].replace("Аккаунт ", "").strip())
         except (ValueError, IndexError):
             return
 
         index = account_number - 1
 
-        if not 0 <= index < len(
-            self.config_manager.accounts
-        ):
+        if not 0 <= index < len(self.config_manager.accounts):
             return
 
         confirmed = messagebox.askyesno(
             "Подтверждение",
-            (
-                f"Удалить Аккаунт {account_number}?\n\n"
-                "Это действие нельзя отменить."
-            ),
+            (f"Удалить Аккаунт {account_number}?\n\nЭто действие нельзя отменить."),
             parent=self,
         )
 
@@ -363,9 +340,7 @@ class AccountDialog(ctk.CTkToplevel):
             return
 
         try:
-            removed = self.config_manager.remove_account(
-                index
-            )
+            removed = self.config_manager.remove_account(index)
         except OSError as error:
             messagebox.showerror(
                 "Ошибка",
@@ -475,10 +450,7 @@ class AccountDialog(ctk.CTkToplevel):
 
         except OSError as error:
             self.status_label.configure(
-                text=(
-                    "Не удалось сохранить аккаунт: "
-                    f"{error}"
-                ),
+                text=(f"Не удалось сохранить аккаунт: {error}"),
                 text_color=COLORS["danger"],
             )
 
@@ -490,14 +462,9 @@ class AccountDialog(ctk.CTkToplevel):
             return
 
         if status == "rate_limited":
-            message = (
-                "Аккаунт добавлен. "
-                "API сейчас вернул HTTP 429."
-            )
+            message = "Аккаунт добавлен. API сейчас вернул HTTP 429."
         else:
-            message = (
-                "Аккаунт успешно проверен и добавлен."
-            )
+            message = "Аккаунт успешно проверен и добавлен."
 
         self.status_label.configure(
             text=message,
@@ -537,13 +504,9 @@ class WordstatGUI:
 
         self.root = ctk.CTk()
 
-        self.root.title(
-            "Yandex Wordstat Parser"
-        )
+        self.root.title("Yandex Wordstat Parser")
 
-        self.root.geometry(
-            "960x750"
-        )
+        self.root.geometry("960x750")
 
         self.root.minsize(
             850,
@@ -559,38 +522,27 @@ class WordstatGUI:
             self._on_close,
         )
 
-        self.worker: Optional[
-            WordstatProcessor
-        ] = None
+        self.worker: WordstatProcessor | None = None
 
-        self.log_queue: queue.Queue[str] = (
-            queue.Queue()
-        )
+        self.log_queue: queue.Queue[str] = queue.Queue()
 
         self.results: list[ParseResult] = []
 
-        self.queries_path_var = (
-            ctk.StringVar()
-        )
+        self.queries_path_var = ctk.StringVar()
 
         self.status_var = ctk.StringVar(
             value="Готов к работе",
         )
 
         try:
-            self.config = ConfigManager(
-                config_path
-            )
+            self.config = ConfigManager(config_path)
         except (
             OSError,
             ValueError,
         ) as error:
             messagebox.showerror(
                 "Ошибка конфигурации",
-                (
-                    "Не удалось загрузить конфигурацию:\n\n"
-                    f"{error}"
-                ),
+                (f"Не удалось загрузить конфигурацию:\n\n{error}"),
                 parent=self.root,
             )
 
@@ -658,12 +610,8 @@ class WordstatGUI:
         self.tabview = ctk.CTkTabview(
             self.root,
             corner_radius=12,
-            segmented_button_fg_color=(
-                COLORS["tab_inactive"]
-            ),
-            segmented_button_selected_color=(
-                COLORS["accent"]
-            ),
+            segmented_button_fg_color=(COLORS["tab_inactive"]),
+            segmented_button_selected_color=(COLORS["accent"]),
         )
 
         self.tabview.pack(
@@ -673,42 +621,26 @@ class WordstatGUI:
             pady=(8, 16),
         )
 
-        self.tab_parsing = (
-            self.tabview.add("Парсинг")
-        )
+        self.tab_parsing = self.tabview.add("Парсинг")
 
-        self.tab_results = (
-            self.tabview.add("Результаты")
-        )
+        self.tab_results = self.tabview.add("Результаты")
 
-        self.tab_settings = (
-            self.tabview.add("Настройки")
-        )
+        self.tab_settings = self.tabview.add("Настройки")
 
     # ------------------------------------------------------------------
     # Parsing tab
     # ------------------------------------------------------------------
 
     def _build_parsing_tab(self) -> None:
-        self._build_file_section(
-            self.tab_parsing
-        )
+        self._build_file_section(self.tab_parsing)
 
-        self._build_control_section(
-            self.tab_parsing
-        )
+        self._build_control_section(self.tab_parsing)
 
-        self._build_progress_section(
-            self.tab_parsing
-        )
+        self._build_progress_section(self.tab_parsing)
 
-        self._build_stats_section(
-            self.tab_parsing
-        )
+        self._build_stats_section(self.tab_parsing)
 
-        self._build_log_section(
-            self.tab_parsing
-        )
+        self._build_log_section(self.tab_parsing)
 
     def _build_file_section(
         self,
@@ -746,10 +678,7 @@ class WordstatGUI:
 
         ctk.CTkLabel(
             frame,
-            text=(
-                "Файл с запросами "
-                "(.txt, одна фраза на строку):"
-            ),
+            text=("Файл с запросами (.txt, одна фраза на строку):"),
         ).grid(
             row=1,
             column=0,
@@ -866,18 +795,12 @@ class WordstatGUI:
             pady=6,
         )
 
-        self.progress_bar = (
-            ctk.CTkProgressBar(
-                frame,
-                height=14,
-                corner_radius=7,
-                progress_color=(
-                    COLORS["progress_fill"]
-                ),
-                fg_color=(
-                    COLORS["progress_bg"]
-                ),
-            )
+        self.progress_bar = ctk.CTkProgressBar(
+            frame,
+            height=14,
+            corner_radius=7,
+            progress_color=(COLORS["progress_fill"]),
+            fg_color=(COLORS["progress_bg"]),
         )
 
         self.progress_bar.pack(
@@ -927,13 +850,11 @@ class WordstatGUI:
             weight=1,
         )
 
-        self.card_processed = (
-            self._create_stat_card(
-                frame,
-                "Обработано",
-                "0 / 0",
-                COLORS["accent"],
-            )
+        self.card_processed = self._create_stat_card(
+            frame,
+            "Обработано",
+            "0 / 0",
+            COLORS["accent"],
         )
 
         self.card_processed.grid(
@@ -944,13 +865,11 @@ class WordstatGUI:
             sticky="ew",
         )
 
-        self.card_found = (
-            self._create_stat_card(
-                frame,
-                "Найдено",
-                "0",
-                COLORS["success"],
-            )
+        self.card_found = self._create_stat_card(
+            frame,
+            "Найдено",
+            "0",
+            COLORS["success"],
         )
 
         self.card_found.grid(
@@ -961,13 +880,11 @@ class WordstatGUI:
             sticky="ew",
         )
 
-        self.card_remaining = (
-            self._create_stat_card(
-                frame,
-                "Осталось запросов",
-                "0",
-                COLORS["info"],
-            )
+        self.card_remaining = self._create_stat_card(
+            frame,
+            "Осталось запросов",
+            "0",
+            COLORS["info"],
         )
 
         self.card_remaining.grid(
@@ -1101,20 +1018,16 @@ class WordstatGUI:
             side="left",
         )
 
-        self.save_report_button = (
-            ctk.CTkButton(
-                header,
-                text="Сохранить отчёт как...",
-                width=180,
-                height=34,
-                corner_radius=8,
-                fg_color=COLORS["success"],
-                hover_color=(
-                    COLORS["success_hover"]
-                ),
-                state="disabled",
-                command=self._save_report,
-            )
+        self.save_report_button = ctk.CTkButton(
+            header,
+            text="Сохранить отчёт как...",
+            width=180,
+            height=34,
+            corner_radius=8,
+            fg_color=COLORS["success"],
+            hover_color=(COLORS["success_hover"]),
+            state="disabled",
+            command=self._save_report,
         )
 
         self.save_report_button.pack(
@@ -1122,12 +1035,10 @@ class WordstatGUI:
             padx=10,
         )
 
-        self.results_count_label = (
-            ctk.CTkLabel(
-                header,
-                text="Записей: 0",
-                text_color="gray",
-            )
+        self.results_count_label = ctk.CTkLabel(
+            header,
+            text="Записей: 0",
+            text_color="gray",
         )
 
         self.results_count_label.pack(
@@ -1441,11 +1352,7 @@ class WordstatGUI:
         )
 
     def _start_parsing(self) -> None:
-        queries_file = (
-            self.queries_path_var
-            .get()
-            .strip()
-        )
+        queries_file = self.queries_path_var.get().strip()
 
         if not queries_file:
             messagebox.showerror(
@@ -1516,9 +1423,7 @@ class WordstatGUI:
 
         self._clear_results_table()
 
-        self._queue_log(
-            "Запуск парсинга..."
-        )
+        self._queue_log("Запуск парсинга...")
 
     def _stop_parsing(self) -> None:
         if self.worker is None:
@@ -1534,9 +1439,7 @@ class WordstatGUI:
             "Остановка...",
         )
 
-        self._queue_log(
-            "Отправлен сигнал остановки."
-        )
+        self._queue_log("Отправлен сигнал остановки.")
 
     # ------------------------------------------------------------------
     # Worker callbacks
@@ -1559,11 +1462,7 @@ class WordstatGUI:
         current: int,
         total: int,
     ) -> None:
-        progress = (
-            current / total
-            if total > 0
-            else 0
-        )
+        progress = current / total if total > 0 else 0
 
         self.progress_bar.set(
             progress,
@@ -1602,11 +1501,7 @@ class WordstatGUI:
         account_total: int,
     ) -> None:
         self.card_remaining.title_label.configure(
-            text=(
-                "ОСТАЛОСЬ ЗАПРОСОВ "
-                f"(АКК. {account_index}/"
-                f"{account_total})"
-            ),
+            text=(f"ОСТАЛОСЬ ЗАПРОСОВ (АКК. {account_index}/{account_total})"),
         )
 
         self.card_remaining.value_label.configure(
@@ -1614,9 +1509,9 @@ class WordstatGUI:
         )
 
     def _on_result(
-            self,
-            result: ParseResult,
-            found_count: int,
+        self,
+        result: ParseResult,
+        found_count: int,
     ) -> None:
         """
         Receives the result from the background thread
@@ -1630,9 +1525,9 @@ class WordstatGUI:
         )
 
     def _apply_result(
-            self,
-            result: ParseResult,
-            found_count: int,
+        self,
+        result: ParseResult,
+        found_count: int,
     ) -> None:
         """
         Updates the 'Found' card, table, and record counter in real-time.
@@ -1706,24 +1601,16 @@ class WordstatGUI:
                 f"Готово. Найдено: {count}",
             )
 
-            self._queue_log(
-                "Парсинг завершён. "
-                f"Найдено {count} подходящих запросов."
-            )
+            self._queue_log(f"Парсинг завершён. Найдено {count} подходящих запросов.")
 
-            self.tabview.set(
-                "Результаты"
-            )
+            self.tabview.set("Результаты")
 
         else:
             self.status_var.set(
                 "Готово. Подходящих запросов нет.",
             )
 
-            self._queue_log(
-                "Парсинг завершён. "
-                "Подходящих запросов не найдено."
-            )
+            self._queue_log("Парсинг завершён. Подходящих запросов не найдено.")
 
         self.worker = None
 
@@ -1749,11 +1636,7 @@ class WordstatGUI:
         for index, result in enumerate(
             self.results,
         ):
-            tag = (
-                "oddrow"
-                if index % 2
-                else "evenrow"
-            )
+            tag = "oddrow" if index % 2 else "evenrow"
 
             self.tree.insert(
                 "",
@@ -1806,10 +1689,7 @@ class WordstatGUI:
         ) as error:
             messagebox.showerror(
                 "Ошибка",
-                (
-                    "Не удалось сохранить отчёт:\n\n"
-                    f"{error}"
-                ),
+                (f"Не удалось сохранить отчёт:\n\n{error}"),
                 parent=self.root,
             )
             return
@@ -1820,9 +1700,7 @@ class WordstatGUI:
             parent=self.root,
         )
 
-        self._queue_log(
-            f"Отчёт сохранён: {path}"
-        )
+        self._queue_log(f"Отчёт сохранён: {path}")
 
     # ------------------------------------------------------------------
     # Settings
@@ -1830,21 +1708,13 @@ class WordstatGUI:
 
     def _save_settings(self) -> None:
         try:
-            max_requests = int(
-                self.entry_max_requests.get()
-            )
+            max_requests = int(self.entry_max_requests.get())
 
-            request_delay = float(
-                self.entry_request_delay.get()
-            )
+            request_delay = float(self.entry_request_delay.get())
 
-            min_normal = int(
-                self.entry_min_normal.get()
-            )
+            min_normal = int(self.entry_min_normal.get())
 
-            min_quoted = int(
-                self.entry_min_quoted.get()
-            )
+            min_quoted = int(self.entry_min_quoted.get())
 
         except ValueError:
             messagebox.showerror(
@@ -1878,21 +1748,13 @@ class WordstatGUI:
             )
             return
 
-        self.config.settings.max_requests_per_hour = (
-            max_requests
-        )
+        self.config.settings.max_requests_per_hour = max_requests
 
-        self.config.settings.request_delay = (
-            request_delay
-        )
+        self.config.settings.request_delay = request_delay
 
-        self.config.settings.min_normal_count = (
-            min_normal
-        )
+        self.config.settings.min_normal_count = min_normal
 
-        self.config.settings.min_quoted_count = (
-            min_quoted
-        )
+        self.config.settings.min_quoted_count = min_quoted
 
         try:
             self.config.save()
@@ -1900,10 +1762,7 @@ class WordstatGUI:
         except OSError as error:
             messagebox.showerror(
                 "Ошибка",
-                (
-                    "Не удалось сохранить настройки:\n"
-                    f"{error}"
-                ),
+                (f"Не удалось сохранить настройки:\n{error}"),
                 parent=self.root,
             )
             return
@@ -1922,16 +1781,12 @@ class WordstatGUI:
         self,
         message: str,
     ) -> None:
-        self.log_queue.put(
-            str(message)
-        )
+        self.log_queue.put(str(message))
 
     def _poll_log_queue(self) -> None:
         try:
             while True:
-                message = (
-                    self.log_queue.get_nowait()
-                )
+                message = self.log_queue.get_nowait()
 
                 self.log_console.configure(
                     state="normal",

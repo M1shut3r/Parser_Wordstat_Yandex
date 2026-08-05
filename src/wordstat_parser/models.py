@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-import time
-from typing import Optional
 
 
 @dataclass(slots=True)
@@ -18,7 +17,7 @@ class AccountState:
     requests_used: int = 0
     last_reset: float = field(default_factory=time.time)
     is_blocked: bool = False
-    blocked_until: Optional[datetime] = None
+    blocked_until: datetime | None = None
 
     def reset(self) -> None:
         self.requests_used = 0

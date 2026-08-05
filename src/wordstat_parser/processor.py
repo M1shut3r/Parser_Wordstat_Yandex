@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .client import WordstatClient
 from .config import ConfigManager
 from .models import ParseResult
-
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int], None]
@@ -77,11 +76,7 @@ class WordstatProcessor:
             "r",
             encoding="utf-8-sig",
         ) as file:
-            queries = [
-                line.strip()
-                for line in file
-                if line.strip()
-            ]
+            queries = [line.strip() for line in file if line.strip()]
 
         return list(dict.fromkeys(queries))
 
@@ -109,9 +104,7 @@ class WordstatProcessor:
         except Exception as error:
             # Ошибка UI callback не должна останавливать
             # основной процесс парсинга.
-            self.log(
-                f"Ошибка обновления интерфейса: {error}"
-            )
+            self.log(f"Ошибка обновления интерфейса: {error}")
 
     def run(self) -> None:
         """
@@ -126,16 +119,11 @@ class WordstatProcessor:
             try:
                 queries = self._load_queries()
             except OSError as error:
-                self.log(
-                    f"Ошибка чтения файла запросов: {error}"
-                )
+                self.log(f"Ошибка чтения файла запросов: {error}")
                 return
 
             if not self.config.accounts:
-                self.log(
-                    "Невозможно начать обработку: "
-                    "не добавлен ни один аккаунт."
-                )
+                self.log("Невозможно начать обработку: не добавлен ни один аккаунт.")
                 return
 
             total = len(queries)
@@ -144,9 +132,7 @@ class WordstatProcessor:
                 self.log("Файл запросов пуст.")
                 return
 
-            self.log(
-                f"Всего уникальных запросов: {total}."
-            )
+            self.log(f"Всего уникальных запросов: {total}.")
             self.log("Начинаем обработку...")
 
             self.stats_callback(
@@ -169,15 +155,10 @@ class WordstatProcessor:
                 start=1,
             ):
                 if self.stop_event.is_set():
-                    self.log(
-                        "Обработка остановлена пользователем."
-                    )
+                    self.log("Обработка остановлена пользователем.")
                     break
 
-                self.log(
-                    f"[{index}/{total}] "
-                    f"Обработка: {query}"
-                )
+                self.log(f"[{index}/{total}] Обработка: {query}")
 
                 normal_count = self.client.get_count(
                     query,
@@ -189,10 +170,7 @@ class WordstatProcessor:
 
                 quoted_count = 0
 
-                if (
-                    normal_count
-                    > self.config.settings.min_normal_count
-                ):
+                if normal_count > self.config.settings.min_normal_count:
                     quoted_count = self.client.get_count(
                         f'"{query}"',
                         self.stop_event,
@@ -208,10 +186,8 @@ class WordstatProcessor:
                 )
 
                 is_valid = (
-                    normal_count
-                    > self.config.settings.min_normal_count
-                    and quoted_count
-                    > self.config.settings.min_quoted_count
+                    normal_count > self.config.settings.min_normal_count
+                    and quoted_count > self.config.settings.min_quoted_count
                 )
 
                 if is_valid:
@@ -219,9 +195,7 @@ class WordstatProcessor:
                     found += 1
 
                     self.log(
-                        "  -> Подходит: "
-                        f"обычный={normal_count}, "
-                        f"кавычки={quoted_count}"
+                        f"  -> Подходит: обычный={normal_count}, кавычки={quoted_count}"
                     )
 
                     # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ:
@@ -247,9 +221,7 @@ class WordstatProcessor:
                 )
 
         except Exception as error:
-            self.log(
-                f"Критическая ошибка обработки: {error}"
-            )
+            self.log(f"Критическая ошибка обработки: {error}")
 
         finally:
             self.client.close()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from openpyxl import Workbook
 
@@ -15,9 +15,7 @@ def export_to_excel(
     results = list(results)
 
     if not results:
-        raise ValueError(
-            "Нет данных для сохранения."
-        )
+        raise ValueError("Нет данных для сохранения.")
 
     workbook = Workbook()
     worksheet = workbook.active

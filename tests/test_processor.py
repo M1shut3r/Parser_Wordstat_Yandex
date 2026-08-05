@@ -1,5 +1,3 @@
-import threading
-
 from wordstat_parser.models import ParseResult
 
 
