@@ -3,15 +3,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
 import requests
 
 from .config import ConfigManager
 from .models import AccountState
-
 
 LogCallback = Callable[[str], None]
 StatsCallback = Callable[[int, int, int], None]
@@ -89,10 +88,7 @@ class WordstatClient:
     - остановку запросов.
     """
 
-    BASE_URL = (
-        "https://searchapi.api.cloud.yandex.net/"
-        "v2/wordstat/topRequests"
-    )
+    BASE_URL = "https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests"
 
     REQUEST_TIMEOUT = 15
     ACCOUNT_BLOCK_SECONDS = 3600
@@ -153,10 +149,7 @@ class WordstatClient:
         self,
         account: AccountState,
     ) -> bool:
-        return (
-            account.requests_used
-            < self.config.settings.max_requests_per_hour
-        )
+        return account.requests_used < self.config.settings.max_requests_per_hour
 
     def _update_stats(self) -> None:
         """Передаёт UI актуальное состояние текущего аккаунта."""
@@ -173,8 +166,7 @@ class WordstatClient:
 
         remaining = max(
             0,
-            self.config.settings.max_requests_per_hour
-            - account.requests_used,
+            self.config.settings.max_requests_per_hour - account.requests_used,
         )
 
         self.stats_callback(
@@ -203,9 +195,7 @@ class WordstatClient:
             1,
             len(self.accounts) + 1,
         ):
-            index = (
-                previous_index + offset
-            ) % len(self.accounts)
+            index = (previous_index + offset) % len(self.accounts)
 
             account = self.accounts[index]
 
@@ -218,9 +208,7 @@ class WordstatClient:
             self.current_index = index
 
             self.log(
-                "Переключение с аккаунта "
-                f"{previous_index + 1} "
-                f"на аккаунт {index + 1}."
+                f"Переключение с аккаунта {previous_index + 1} на аккаунт {index + 1}."
             )
 
             self._update_stats()
@@ -259,9 +247,7 @@ class WordstatClient:
         for account in self.accounts:
             self._reset_if_expired(account)
 
-            if account.is_available() and self._account_has_requests(
-                account
-            ):
+            if account.is_available() and self._account_has_requests(account):
                 return False
 
         return True
@@ -284,11 +270,8 @@ class WordstatClient:
 
         account.is_blocked = True
 
-        account.blocked_until = (
-            datetime.now()
-            + timedelta(
-                seconds=self.ACCOUNT_BLOCK_SECONDS
-            )
+        account.blocked_until = datetime.now() + timedelta(
+            seconds=self.ACCOUNT_BLOCK_SECONDS
         )
 
         self.block_logger.log_block(
@@ -296,10 +279,7 @@ class WordstatClient:
             account.blocked_until,
         )
 
-        self.log(
-            f"Аккаунт {index + 1} временно заблокирован: "
-            f"{reason}"
-        )
+        self.log(f"Аккаунт {index + 1} временно заблокирован: {reason}")
 
     # ------------------------------------------------------------------
     # Waiting
@@ -335,19 +315,14 @@ class WordstatClient:
             if self._find_available_account():
                 return True
 
-            unblock_time = (
-                self._get_earliest_unblock_time()
-            )
+            unblock_time = self._get_earliest_unblock_time()
 
             if unblock_time is None:
                 return False
 
             wait_seconds = max(
                 0,
-                (
-                    unblock_time
-                    - datetime.now()
-                ).total_seconds(),
+                (unblock_time - datetime.now()).total_seconds(),
             )
 
             self.log(
@@ -356,16 +331,9 @@ class WordstatClient:
                 f"{int(wait_seconds) + 1} сек."
             )
 
-            deadline = (
-                time.monotonic()
-                + wait_seconds
-                + 1
-            )
+            deadline = time.monotonic() + wait_seconds + 1
 
-            while (
-                time.monotonic() < deadline
-                and not stop_event.is_set()
-            ):
+            while time.monotonic() < deadline and not stop_event.is_set():
                 stop_event.wait(1)
 
         return False
@@ -384,22 +352,15 @@ class WordstatClient:
         """
 
         if not self.accounts:
-            self.log(
-                "Нет настроенных аккаунтов."
-            )
+            self.log("Нет настроенных аккаунтов.")
             return None
 
         while not stop_event.is_set():
-            account = self.accounts[
-                self.current_index
-            ]
+            account = self.accounts[self.current_index]
 
             self._reset_if_expired(account)
 
-            if (
-                account.is_available()
-                and self._account_has_requests(account)
-            ):
+            if account.is_available() and self._account_has_requests(account):
                 self._update_stats()
                 return account
 
@@ -407,9 +368,7 @@ class WordstatClient:
                 continue
 
             if self._all_accounts_blocked():
-                if not self._wait_for_available_account(
-                    stop_event
-                ):
+                if not self._wait_for_available_account(stop_event):
                     return None
 
                 continue
@@ -430,10 +389,7 @@ class WordstatClient:
         account: AccountState,
     ) -> dict[str, str]:
         return {
-            "Authorization": (
-                f"Api-Key "
-                f"{account.config.api_key}"
-            ),
+            "Authorization": (f"Api-Key {account.config.api_key}"),
             "Content-Type": "application/json",
         }
 
@@ -467,10 +423,7 @@ class WordstatClient:
             )
 
         except requests.RequestException as error:
-            self.log(
-                f"Сетевая ошибка при запросе "
-                f'"{phrase}": {error}'
-            )
+            self.log(f'Сетевая ошибка при запросе "{phrase}": {error}')
 
             return None
 
@@ -500,9 +453,7 @@ class WordstatClient:
             return 0
 
         while not stop_event.is_set():
-            account = self._prepare_account(
-                stop_event
-            )
+            account = self._prepare_account(stop_event)
 
             if account is None:
                 return 0
@@ -534,10 +485,7 @@ class WordstatClient:
                     data = response.json()
 
                 except ValueError:
-                    self.log(
-                        "Wordstat API вернул "
-                        "некорректный JSON."
-                    )
+                    self.log("Wordstat API вернул некорректный JSON.")
                     return 0
 
                 try:
@@ -552,10 +500,7 @@ class WordstatClient:
                     TypeError,
                     ValueError,
                 ):
-                    self.log(
-                        "API вернул некорректное "
-                        "значение totalCount."
-                    )
+                    self.log("API вернул некорректное значение totalCount.")
                     return 0
 
             # ----------------------------------------------------------
@@ -571,9 +516,7 @@ class WordstatClient:
                 if self._switch_account():
                     continue
 
-                if self._wait_for_available_account(
-                    stop_event
-                ):
+                if self._wait_for_available_account(stop_event):
                     continue
 
                 return 0
@@ -588,20 +531,13 @@ class WordstatClient:
             ):
                 self._block_account(
                     self.current_index,
-                    (
-                        "HTTP "
-                        f"{response.status_code} "
-                        "(ошибка авторизации)"
-                    ),
+                    (f"HTTP {response.status_code} (ошибка авторизации)"),
                 )
 
                 if self._switch_account():
                     continue
 
-                self.log(
-                    "Нет доступных аккаунтов "
-                    "для продолжения работы."
-                )
+                self.log("Нет доступных аккаунтов для продолжения работы.")
 
                 return 0
 
@@ -610,10 +546,7 @@ class WordstatClient:
             # ----------------------------------------------------------
 
             if 500 <= response.status_code < 600:
-                self.log(
-                    "Ошибка сервера Wordstat API: "
-                    f"HTTP {response.status_code}"
-                )
+                self.log(f"Ошибка сервера Wordstat API: HTTP {response.status_code}")
 
                 return 0
 
@@ -715,8 +648,5 @@ class WordstatClient:
 
         return (
             False,
-            (
-                f"HTTP {response.status_code}: "
-                f"{message[:300]}"
-            ),
+            (f"HTTP {response.status_code}: {message[:300]}"),
         )

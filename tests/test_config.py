@@ -24,10 +24,7 @@ def test_add_and_remove_account(tmp_path: Path) -> None:
     )
 
     assert len(config.accounts) == 1
-    assert (
-        config.accounts[0].config.api_key
-        == "test-api-key"
-    )
+    assert config.accounts[0].config.api_key == "test-api-key"
 
     assert config.remove_account(0) is True
     assert config.accounts == []
