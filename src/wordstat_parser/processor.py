@@ -16,19 +16,6 @@ FinishCallback = Callable[[list[ParseResult]], None]
 
 
 class WordstatProcessor:
-    """
-    Основной обработчик запросов Wordstat.
-
-    Processor не занимается отображением UI напрямую.
-    Он сообщает интерфейсу о событиях через callbacks:
-
-    - log_callback      — новое сообщение в лог;
-    - progress_callback — изменение прогресса;
-    - stats_callback    — статистика API;
-    - result_callback   — найден новый подходящий результат;
-    - finish_callback   — обработка полностью завершена.
-    """
-
     def __init__(
         self,
         config: ConfigManager,
@@ -41,7 +28,6 @@ class WordstatProcessor:
     ) -> None:
         self.config = config
         self.queries_file = Path(queries_file)
-
         self.log = log_callback
         self.progress_callback = progress_callback
         self.stats_callback = stats_callback
@@ -57,21 +43,9 @@ class WordstatProcessor:
         )
 
     def stop(self) -> None:
-        """
-        Запрашивает остановку обработки.
-
-        Текущий HTTP-запрос будет завершён,
-        после чего processor прекратит дальнейшую обработку.
-        """
         self.stop_event.set()
 
     def _load_queries(self) -> list[str]:
-        """
-        Загружает запросы из TXT-файла.
-
-        Пустые строки удаляются.
-        Дубликаты удаляются с сохранением исходного порядка.
-        """
         with self.queries_file.open(
             "r",
             encoding="utf-8-sig",
@@ -85,14 +59,6 @@ class WordstatProcessor:
         result: ParseResult,
         found_count: int,
     ) -> None:
-        """
-        Немедленно передаёт найденный результат в UI.
-
-        Важно:
-        callback вызывается непосредственно в момент,
-        когда результат добавлен в results, а не после
-        завершения всей обработки.
-        """
         if self.result_callback is None:
             return
 
@@ -102,18 +68,14 @@ class WordstatProcessor:
                 found_count,
             )
         except Exception as error:
-            # Ошибка UI callback не должна останавливать
-            # основной процесс парсинга.
             self.log(f"Ошибка обновления интерфейса: {error}")
 
     def run(self) -> None:
-        """
-        Основной цикл обработки запросов.
-
-        Метод предполагается запускать в отдельном потоке,
-        чтобы не блокировать GUI.
-        """
         results: list[ParseResult] = []
+        processed = 0
+        found = 0
+        failed = 0
+        total = 0
 
         try:
             try:
@@ -141,10 +103,6 @@ class WordstatProcessor:
                 len(self.config.accounts),
             )
 
-            processed = 0
-            found = 0
-
-            # Показываем начальное состояние прогресса.
             self.progress_callback(
                 0,
                 total,
@@ -155,7 +113,6 @@ class WordstatProcessor:
                 start=1,
             ):
                 if self.stop_event.is_set():
-                    self.log("Обработка остановлена пользователем.")
                     break
 
                 self.log(f"[{index}/{total}] Обработка: {query}")
@@ -168,6 +125,19 @@ class WordstatProcessor:
                 if self.stop_event.is_set():
                     break
 
+                if normal_count is None:
+                    failed += 1
+                    processed = index
+
+                    self.log("  -> Не удалось получить данные. Запрос пропущен.")
+
+                    self.progress_callback(
+                        processed,
+                        total,
+                    )
+
+                    continue
+
                 quoted_count = 0
 
                 if normal_count > self.config.settings.min_normal_count:
@@ -176,8 +146,25 @@ class WordstatProcessor:
                         self.stop_event,
                     )
 
-                if self.stop_event.is_set():
-                    break
+                    if self.stop_event.is_set():
+                        break
+
+                    if quoted_count is None:
+                        failed += 1
+                        processed = index
+
+                        self.log(
+                            "  -> Не удалось получить "
+                            "данные для запроса в кавычках. "
+                            "Запрос пропущен."
+                        )
+
+                        self.progress_callback(
+                            processed,
+                            total,
+                        )
+
+                        continue
 
                 result = ParseResult(
                     query=query,
@@ -198,9 +185,6 @@ class WordstatProcessor:
                         f"  -> Подходит: обычный={normal_count}, кавычки={quoted_count}"
                     )
 
-                    # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ:
-                    # UI получает результат сразу,
-                    # не дожидаясь окончания всего файла.
                     self._emit_result(
                         result,
                         found,
@@ -214,7 +198,6 @@ class WordstatProcessor:
 
                 processed = index
 
-                # Обновляем прогресс ПОСЛЕ обработки запроса.
                 self.progress_callback(
                     processed,
                     total,
@@ -224,6 +207,13 @@ class WordstatProcessor:
             self.log(f"Критическая ошибка обработки: {error}")
 
         finally:
-            self.client.close()
+            if failed:
+                self.log(f"Не удалось обработать запросов: {failed}.")
 
+            if self.stop_event.is_set():
+                self.log(f"Обработка остановлена: {processed} из {total}.")
+            else:
+                self.log(f"Обработка завершена: {processed} из {total}.")
+
+            self.client.close()
             self.finish_callback(results)
