@@ -1352,6 +1352,9 @@ class WordstatGUI:
         )
 
     def _start_parsing(self) -> None:
+        if self.worker is not None:
+            return
+
         queries_file = self.queries_path_var.get().strip()
 
         if not queries_file:
@@ -1426,10 +1429,15 @@ class WordstatGUI:
         self._queue_log("Запуск парсинга...")
 
     def _stop_parsing(self) -> None:
-        if self.worker is None:
+        worker = self.worker
+
+        if worker is None:
             return
 
-        self.worker.stop()
+        if worker.stop_event.is_set():
+            return
+
+        worker.stop()
 
         self.stop_button.configure(
             state="disabled",
@@ -1603,9 +1611,15 @@ class WordstatGUI:
 
             self._queue_log(f"Парсинг завершён. Найдено {count} подходящих запросов.")
 
-            self.tabview.set("Результаты")
+            self.tabview.set(
+                "Результаты",
+            )
 
         else:
+            self.save_report_button.configure(
+                state="disabled",
+            )
+
             self.status_var.set(
                 "Готово. Подходящих запросов нет.",
             )

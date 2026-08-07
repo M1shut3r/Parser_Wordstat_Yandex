@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import threading
 import time
 from collections.abc import Callable
@@ -17,8 +18,6 @@ StatsCallback = Callable[[int, int, int], None]
 
 
 class BlockLogger:
-    """Сохраняет историю временной блокировки аккаунтов."""
-
     def __init__(
         self,
         log_file: str | Path = "block_history.json",
@@ -58,7 +57,6 @@ class BlockLogger:
             }
         )
 
-        # Не даём файлу истории расти бесконечно.
         history = history[-100:]
 
         try:
@@ -71,27 +69,20 @@ class BlockLogger:
                 encoding="utf-8",
             )
         except OSError:
-            # Ошибка журнала не должна ломать парсер.
             pass
 
 
 class WordstatClient:
-    """
-    Клиент Yandex Wordstat API.
-
-    Отвечает только за:
-    - HTTP-запросы;
-    - управление аккаунтами;
-    - лимиты;
-    - обработку HTTP 429;
-    - переключение аккаунтов;
-    - остановку запросов.
-    """
-
     BASE_URL = "https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests"
 
     REQUEST_TIMEOUT = 15
     ACCOUNT_BLOCK_SECONDS = 3600
+
+    MAX_NETWORK_RETRIES = 5
+    MAX_SERVER_RETRIES = 5
+
+    RETRY_BASE_DELAY = 1.0
+    RETRY_MAX_DELAY = 30.0
 
     def __init__(
         self,
@@ -104,11 +95,8 @@ class WordstatClient:
         self.stats_callback = stats_callback
 
         self.current_index = 0
-
         self.block_logger = BlockLogger()
-
         self.session = requests.Session()
-
         self._lock = threading.Lock()
 
     @property
@@ -116,25 +104,13 @@ class WordstatClient:
         return self.config.accounts
 
     def close(self) -> None:
-        """Закрывает HTTP-сессию."""
         self.session.close()
-
-    # ------------------------------------------------------------------
-    # Account state
-    # ------------------------------------------------------------------
 
     def _reset_if_expired(
         self,
         account: AccountState,
     ) -> None:
-        """
-        Снимает временную блокировку аккаунта,
-        если прошёл час с момента последнего сброса.
-        """
-
-        now = time.time()
-
-        if now - account.last_reset >= 3600:
+        if time.time() - account.last_reset >= 3600:
             account.reset()
 
     def _is_account_available(
@@ -142,7 +118,6 @@ class WordstatClient:
         account: AccountState,
     ) -> bool:
         self._reset_if_expired(account)
-
         return account.is_available()
 
     def _account_has_requests(
@@ -152,15 +127,14 @@ class WordstatClient:
         return account.requests_used < self.config.settings.max_requests_per_hour
 
     def _update_stats(self) -> None:
-        """Передаёт UI актуальное состояние текущего аккаунта."""
-
         if not self.accounts:
-            self.stats_callback(
-                0,
-                0,
-                0,
-            )
+            self.stats_callback(0, 0, 0)
             return
+
+        self.current_index = min(
+            self.current_index,
+            len(self.accounts) - 1,
+        )
 
         account = self.accounts[self.current_index]
 
@@ -175,17 +149,7 @@ class WordstatClient:
             len(self.accounts),
         )
 
-    # ------------------------------------------------------------------
-    # Account switching
-    # ------------------------------------------------------------------
-
     def _switch_account(self) -> bool:
-        """
-        Ищет следующий доступный аккаунт.
-
-        Возвращает True, если переключение произошло.
-        """
-
         if not self.accounts:
             return False
 
@@ -218,10 +182,6 @@ class WordstatClient:
         return False
 
     def _find_available_account(self) -> bool:
-        """
-        Проверяет все аккаунты и пытается выбрать доступный.
-        """
-
         if not self.accounts:
             return False
 
@@ -233,14 +193,13 @@ class WordstatClient:
                 continue
 
             self.current_index = index
-
             self._update_stats()
 
             return True
 
         return False
 
-    def _all_accounts_blocked(self) -> bool:
+    def _all_accounts_exhausted(self) -> bool:
         if not self.accounts:
             return True
 
@@ -252,26 +211,19 @@ class WordstatClient:
 
         return True
 
-    # ------------------------------------------------------------------
-    # Blocking
-    # ------------------------------------------------------------------
-
     def _block_account(
         self,
         index: int,
         reason: str,
     ) -> None:
-        """Временно блокирует аккаунт."""
-
         if not 0 <= index < len(self.accounts):
             return
 
         account = self.accounts[index]
 
         account.is_blocked = True
-
         account.blocked_until = datetime.now() + timedelta(
-            seconds=self.ACCOUNT_BLOCK_SECONDS
+            seconds=self.ACCOUNT_BLOCK_SECONDS,
         )
 
         self.block_logger.log_block(
@@ -280,10 +232,6 @@ class WordstatClient:
         )
 
         self.log(f"Аккаунт {index + 1} временно заблокирован: {reason}")
-
-    # ------------------------------------------------------------------
-    # Waiting
-    # ------------------------------------------------------------------
 
     def _get_earliest_unblock_time(
         self,
@@ -303,13 +251,7 @@ class WordstatClient:
         self,
         stop_event: threading.Event,
     ) -> bool:
-        """
-        Ожидает разблокировки аккаунта.
-
-        Проверка stop_event выполняется каждую секунду,
-        поэтому приложение не зависает на полный час
-        при остановке пользователем.
-        """
+        notification_sent = False
 
         while not stop_event.is_set():
             if self._find_available_account():
@@ -325,37 +267,36 @@ class WordstatClient:
                 (unblock_time - datetime.now()).total_seconds(),
             )
 
-            self.log(
-                "Все аккаунты временно недоступны. "
-                f"Ожидание примерно "
-                f"{int(wait_seconds) + 1} сек."
+            if not notification_sent:
+                self.log(
+                    "Все доступные аккаунты временно "
+                    "заблокированы. "
+                    f"Ожидание примерно "
+                    f"{int(wait_seconds) + 1} сек."
+                )
+                notification_sent = True
+
+            stop_event.wait(
+                min(
+                    1.0,
+                    max(0.1, wait_seconds),
+                )
             )
 
-            deadline = time.monotonic() + wait_seconds + 1
-
-            while time.monotonic() < deadline and not stop_event.is_set():
-                stop_event.wait(1)
-
         return False
-
-    # ------------------------------------------------------------------
-    # Account preparation
-    # ------------------------------------------------------------------
 
     def _prepare_account(
         self,
         stop_event: threading.Event,
     ) -> AccountState | None:
-        """
-        Возвращает аккаунт, который можно использовать
-        для следующего запроса.
-        """
-
         if not self.accounts:
             self.log("Нет настроенных аккаунтов.")
             return None
 
         while not stop_event.is_set():
+            if self.current_index >= len(self.accounts):
+                self.current_index = 0
+
             account = self.accounts[self.current_index]
 
             self._reset_if_expired(account)
@@ -367,22 +308,17 @@ class WordstatClient:
             if self._switch_account():
                 continue
 
-            if self._all_accounts_blocked():
-                if not self._wait_for_available_account(stop_event):
-                    return None
+            if self._all_accounts_exhausted():
+                return None
 
-                continue
-
-            if self._find_available_account():
+            if self._wait_for_available_account(
+                stop_event,
+            ):
                 continue
 
             return None
 
         return None
-
-    # ------------------------------------------------------------------
-    # HTTP
-    # ------------------------------------------------------------------
 
     def _build_headers(
         self,
@@ -410,9 +346,12 @@ class WordstatClient:
         self,
         account: AccountState,
         phrase: str,
-    ) -> requests.Response | None:
+    ) -> tuple[
+        requests.Response | None,
+        Exception | None,
+    ]:
         try:
-            return self.session.post(
+            response = self.session.post(
                 self.BASE_URL,
                 headers=self._build_headers(account),
                 json=self._build_payload(
@@ -422,71 +361,134 @@ class WordstatClient:
                 timeout=self.REQUEST_TIMEOUT,
             )
 
-        except requests.RequestException as error:
-            self.log(f'Сетевая ошибка при запросе "{phrase}": {error}')
+            account.requests_used += 1
+            self._update_stats()
 
+            return response, None
+
+        except requests.RequestException as error:
+            return None, error
+
+    @classmethod
+    def _calculate_backoff(
+        cls,
+        attempt: int,
+    ) -> float:
+        base_delay = min(
+            cls.RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+            cls.RETRY_MAX_DELAY,
+        )
+
+        jitter = random.uniform(
+            0.0,
+            min(1.0, base_delay * 0.25),
+        )
+
+        return min(
+            cls.RETRY_MAX_DELAY,
+            base_delay + jitter,
+        )
+
+    @staticmethod
+    def _get_retry_after(
+        response: requests.Response,
+    ) -> float | None:
+        value = response.headers.get("Retry-After")
+
+        if not value:
             return None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        try:
+            seconds = float(value)
+        except ValueError:
+            return None
+
+        if seconds < 0:
+            return None
+
+        return min(seconds, 60.0)
 
     def get_count(
         self,
         phrase: str,
         stop_event: threading.Event,
-    ) -> int:
-        """
-        Получает количество показов для фразы.
-
-        Метод не использует рекурсию:
-        HTTP 429 обрабатывается циклом.
-
-        Это важно, поскольку при большом количестве
-        последовательных блокировок рекурсивная реализация
-        могла бы привести к переполнению стека.
-        """
-
+    ) -> int | None:
         phrase = phrase.strip()
 
         if not phrase:
             return 0
 
+        network_retry = 0
+        server_retry = 0
+
         while not stop_event.is_set():
-            account = self._prepare_account(stop_event)
+            account = self._prepare_account(
+                stop_event,
+            )
 
             if account is None:
-                return 0
+                if stop_event.is_set():
+                    return None
+
+                self.log(
+                    f'Не удалось получить доступный аккаунт для запроса "{phrase}".'
+                )
+
+                return None
 
             delay = self.config.settings.request_delay
 
             if delay > 0:
                 if stop_event.wait(delay):
-                    return 0
+                    return None
 
-            response = self._post(
+            response, network_error = self._post(
                 account,
                 phrase,
             )
 
+            if network_error is not None:
+                network_retry += 1
+
+                if network_retry > self.MAX_NETWORK_RETRIES:
+                    self.log(
+                        f"Сетевая ошибка при запросе "
+                        f'"{phrase}" после '
+                        f"{self.MAX_NETWORK_RETRIES} повторов: "
+                        f"{network_error}"
+                    )
+
+                    return None
+
+                retry_delay = self._calculate_backoff(
+                    network_retry,
+                )
+
+                self.log(
+                    f"Сетевая ошибка при запросе "
+                    f'"{phrase}": {network_error}. '
+                    f"Повтор {network_retry}/"
+                    f"{self.MAX_NETWORK_RETRIES} "
+                    f"через {retry_delay:.1f} сек."
+                )
+
+                if stop_event.wait(retry_delay):
+                    return None
+
+                continue
+
             if response is None:
-                return 0
+                self.log(f'Неизвестная ошибка сети при запросе "{phrase}".')
+                return None
 
-            account.requests_used += 1
-
-            self._update_stats()
-
-            # ----------------------------------------------------------
-            # Success
-            # ----------------------------------------------------------
+            network_retry = 0
 
             if response.status_code == 200:
                 try:
                     data = response.json()
-
-                except ValueError:
-                    self.log("Wordstat API вернул некорректный JSON.")
-                    return 0
+                except ValueError as error:
+                    self.log(f"Wordstat API вернул некорректный JSON: {error}")
+                    return None
 
                 try:
                     return int(
@@ -495,17 +497,12 @@ class WordstatClient:
                             0,
                         )
                     )
-
                 except (
                     TypeError,
                     ValueError,
-                ):
-                    self.log("API вернул некорректное значение totalCount.")
-                    return 0
-
-            # ----------------------------------------------------------
-            # Rate limit
-            # ----------------------------------------------------------
+                ) as error:
+                    self.log(f"API вернул некорректное значение totalCount: {error}")
+                    return None
 
             if response.status_code == 429:
                 self._block_account(
@@ -514,21 +511,18 @@ class WordstatClient:
                 )
 
                 if self._switch_account():
+                    server_retry = 0
                     continue
 
-                if self._wait_for_available_account(stop_event):
+                if self._wait_for_available_account(
+                    stop_event,
+                ):
+                    server_retry = 0
                     continue
 
-                return 0
+                return None
 
-            # ----------------------------------------------------------
-            # Unauthorized
-            # ----------------------------------------------------------
-
-            if response.status_code in (
-                401,
-                403,
-            ):
+            if response.status_code in (401, 403):
                 self._block_account(
                     self.current_index,
                     (f"HTTP {response.status_code} (ошибка авторизации)"),
@@ -539,20 +533,37 @@ class WordstatClient:
 
                 self.log("Нет доступных аккаунтов для продолжения работы.")
 
-                return 0
-
-            # ----------------------------------------------------------
-            # Server errors
-            # ----------------------------------------------------------
+                return None
 
             if 500 <= response.status_code < 600:
-                self.log(f"Ошибка сервера Wordstat API: HTTP {response.status_code}")
+                server_retry += 1
 
-                return 0
+                if server_retry > self.MAX_SERVER_RETRIES:
+                    self.log(
+                        f"Ошибка сервера Wordstat API "
+                        f'при запросе "{phrase}": '
+                        f"HTTP {response.status_code}. "
+                        f"Исчерпаны повторные попытки."
+                    )
 
-            # ----------------------------------------------------------
-            # Other errors
-            # ----------------------------------------------------------
+                    return None
+
+                retry_delay = self._calculate_backoff(
+                    server_retry,
+                )
+
+                self.log(
+                    f"Ошибка сервера Wordstat API: "
+                    f"HTTP {response.status_code}. "
+                    f"Повтор {server_retry}/"
+                    f"{self.MAX_SERVER_RETRIES} "
+                    f"через {retry_delay:.1f} сек."
+                )
+
+                if stop_event.wait(retry_delay):
+                    return None
+
+                continue
 
             try:
                 error_data = response.json()
@@ -563,35 +574,25 @@ class WordstatClient:
                         response.text,
                     )
                 )
-
             except ValueError:
                 error_message = response.text
 
             self.log(
-                f"Ошибка Wordstat API "
+                f"Ошибка Wordstat API при запросе "
+                f'"{phrase}": '
                 f"HTTP {response.status_code}: "
                 f"{error_message[:300]}"
             )
 
-            return 0
+            return None
 
-        return 0
+        return None
 
     def validate_account(
         self,
         api_key: str,
         folder_id: str,
     ) -> tuple[bool, str]:
-        """
-        Проверяет API Key и Folder ID.
-
-        Возвращает:
-
-            (True, "ok")
-            (True, "rate_limited")
-            (False, "error message")
-        """
-
         api_key = api_key.strip()
         folder_id = folder_id.strip()
 
@@ -618,7 +619,6 @@ class WordstatClient:
                 json=payload,
                 timeout=10,
             )
-
         except requests.RequestException as error:
             return False, f"Сетевая ошибка: {error}"
 
@@ -637,7 +637,6 @@ class WordstatClient:
                     response.text,
                 )
             )
-
         except ValueError:
             message = response.text
 
