@@ -7,12 +7,19 @@ from pathlib import Path
 from .client import WordstatClient
 from .config import ConfigManager
 from .models import ParseResult
+from .progress import ProgressManager
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int], None]
 StatsCallback = Callable[[int, int, int], None]
-ResultCallback = Callable[[ParseResult, int], None]
-FinishCallback = Callable[[list[ParseResult]], None]
+ResultCallback = Callable[
+    [ParseResult, int],
+    None,
+]
+FinishCallback = Callable[
+    [list[ParseResult], bool],
+    None,
+]
 
 
 class WordstatProcessor:
@@ -28,6 +35,7 @@ class WordstatProcessor:
     ) -> None:
         self.config = config
         self.queries_file = Path(queries_file)
+
         self.log = log_callback
         self.progress_callback = progress_callback
         self.stats_callback = stats_callback
@@ -35,6 +43,8 @@ class WordstatProcessor:
         self.result_callback = result_callback
 
         self.stop_event = threading.Event()
+
+        self.progress_manager = ProgressManager(self.queries_file)
 
         self.client = WordstatClient(
             config=config,
@@ -67,19 +77,66 @@ class WordstatProcessor:
                 result,
                 found_count,
             )
+
         except Exception as error:
             self.log(f"Ошибка обновления интерфейса: {error}")
 
+    def _save_progress(
+        self,
+        next_index: int,
+        total: int,
+        results: list[ParseResult],
+    ) -> None:
+        try:
+            self.progress_manager.save(
+                next_index=next_index,
+                total=total,
+                results=results,
+            )
+
+        except Exception as error:
+            self.log(f"Не удалось сохранить прогресс: {error}")
+
+    def _load_progress(
+        self,
+        total: int,
+    ) -> tuple[
+        int,
+        list[ParseResult],
+    ]:
+        try:
+            return self.progress_manager.load(total)
+
+        except Exception as error:
+            self.log(f"Не удалось загрузить прогресс: {error}")
+
+            return 0, []
+
+    def _notify_finish(
+        self,
+        results: list[ParseResult],
+        completed: bool,
+    ) -> None:
+        try:
+            self.finish_callback(
+                results,
+                completed,
+            )
+
+        except Exception as error:
+            self.log(f"Ошибка callback завершения: {error}")
+
     def run(self) -> None:
         results: list[ParseResult] = []
+
         processed = 0
-        found = 0
-        failed = 0
         total = 0
+        completed = False
 
         try:
             try:
                 queries = self._load_queries()
+
             except OSError as error:
                 self.log(f"Ошибка чтения файла запросов: {error}")
                 return
@@ -92,10 +149,41 @@ class WordstatProcessor:
 
             if total == 0:
                 self.log("Файл запросов пуст.")
+
+                completed = True
                 return
 
-            self.log(f"Всего уникальных запросов: {total}.")
-            self.log("Начинаем обработку...")
+            (
+                start_index,
+                saved_results,
+            ) = self._load_progress(total)
+
+            results = saved_results
+            processed = start_index
+
+            if start_index > 0:
+                self.log("Найден сохранённый прогресс.")
+
+                self.log(f"Продолжаем с запроса {start_index + 1}/{total}.")
+
+                self.log(f"Восстановлено результатов: {len(results)}.")
+
+                for (
+                    result_index,
+                    result,
+                ) in enumerate(
+                    results,
+                    start=1,
+                ):
+                    self._emit_result(
+                        result,
+                        result_index,
+                    )
+
+            else:
+                self.log(f"Всего уникальных запросов: {total}.")
+
+                self.log("Начинаем обработку...")
 
             self.stats_callback(
                 self.config.settings.max_requests_per_hour,
@@ -104,36 +192,37 @@ class WordstatProcessor:
             )
 
             self.progress_callback(
-                0,
+                processed,
                 total,
             )
 
-            for index, query in enumerate(
-                queries,
-                start=1,
+            found = len(results)
+
+            for index in range(
+                start_index,
+                total,
             ):
                 if self.stop_event.is_set():
                     break
 
-                self.log(f"[{index}/{total}] Обработка: {query}")
+                query = queries[index]
+
+                self.log(f"[{index + 1}/{total}] Обработка: {query}")
 
                 normal_count = self.client.get_count(
                     query,
                     self.stop_event,
                 )
 
-                if self.stop_event.is_set():
-                    break
-
                 if normal_count is None:
-                    failed += 1
-                    processed = index
+                    if self.stop_event.is_set():
+                        break
 
-                    self.log("  -> Не удалось получить данные. Запрос пропущен.")
-
-                    self.progress_callback(
-                        processed,
-                        total,
+                    self.log(
+                        f"Не удалось получить "
+                        f'результат для "{query}". '
+                        "Попытка будет "
+                        "повторена автоматически."
                     )
 
                     continue
@@ -146,22 +235,16 @@ class WordstatProcessor:
                         self.stop_event,
                     )
 
-                    if self.stop_event.is_set():
-                        break
-
                     if quoted_count is None:
-                        failed += 1
-                        processed = index
+                        if self.stop_event.is_set():
+                            break
 
                         self.log(
-                            "  -> Не удалось получить "
-                            "данные для запроса в кавычках. "
-                            "Запрос пропущен."
-                        )
-
-                        self.progress_callback(
-                            processed,
-                            total,
+                            f"Не удалось получить "
+                            f'результат для "{query}" '
+                            "в кавычках. "
+                            "Попытка будет "
+                            "повторена автоматически."
                         )
 
                         continue
@@ -179,6 +262,7 @@ class WordstatProcessor:
 
                 if is_valid:
                     results.append(result)
+
                     found += 1
 
                     self.log(
@@ -189,31 +273,76 @@ class WordstatProcessor:
                         result,
                         found,
                     )
+
                 else:
                     self.log(
                         "  -> Не подходит: "
-                        f"обычный={normal_count}, "
-                        f"кавычки={quoted_count}"
+                        f"обычный="
+                        f"{normal_count}, "
+                        f"кавычки="
+                        f"{quoted_count}"
                     )
 
-                processed = index
+                processed = index + 1
 
                 self.progress_callback(
                     processed,
                     total,
                 )
 
+                self._save_progress(
+                    next_index=processed,
+                    total=total,
+                    results=results,
+                )
+
+            completed = processed == total and not self.stop_event.is_set()
+
         except Exception as error:
             self.log(f"Критическая ошибка обработки: {error}")
 
+            self._save_progress(
+                next_index=processed,
+                total=total,
+                results=results,
+            )
+
         finally:
-            if failed:
-                self.log(f"Не удалось обработать запросов: {failed}.")
+            try:
+                if completed:
+                    self.progress_manager.remove()
 
-            if self.stop_event.is_set():
-                self.log(f"Обработка остановлена: {processed} из {total}.")
-            else:
-                self.log(f"Обработка завершена: {processed} из {total}.")
+                    self.log("Обработка полностью завершена.")
 
-            self.client.close()
-            self.finish_callback(results)
+                    self.log("Файл сохранённого прогресса удалён.")
+
+                elif self.stop_event.is_set():
+                    self._save_progress(
+                        next_index=processed,
+                        total=total,
+                        results=results,
+                    )
+
+                    self.log(f"Обработка остановлена: {processed}/{total}.")
+
+                else:
+                    self._save_progress(
+                        next_index=processed,
+                        total=total,
+                        results=results,
+                    )
+
+                    self.log(f"Обработка прервана: {processed}/{total}.")
+
+            except Exception as error:
+                self.log(f"Ошибка сохранения состояния: {error}")
+
+            try:
+                self.client.close()
+            except Exception:
+                pass
+
+            self._notify_finish(
+                results,
+                completed,
+            )
