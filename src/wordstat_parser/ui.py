@@ -1352,8 +1352,7 @@ class WordstatGUI:
         )
 
     def _start_parsing(self) -> None:
-        if self.worker is not None:
-            return
+        self.worker = None
 
         queries_file = self.queries_path_var.get().strip()
 
@@ -1437,17 +1436,17 @@ class WordstatGUI:
         if worker.stop_event.is_set():
             return
 
-        worker.stop()
-
-        self.stop_button.configure(
-            state="disabled",
-        )
-
         self.status_var.set(
             "Остановка...",
         )
 
         self._queue_log("Отправлен сигнал остановки.")
+
+        worker.stop()
+
+        self.stop_button.configure(
+            state="disabled",
+        )
 
     # ------------------------------------------------------------------
     # Worker callbacks
@@ -1571,26 +1570,21 @@ class WordstatGUI:
     def _on_finish(
         self,
         results: list[ParseResult],
+        completed: bool,
     ) -> None:
         self.root.after(
             0,
             self._apply_finish,
             results,
+            completed,
         )
 
     def _apply_finish(
         self,
         results: list[ParseResult],
+        completed: bool,
     ) -> None:
         self.results = list(results)
-
-        self.start_button.configure(
-            state="normal",
-        )
-
-        self.stop_button.configure(
-            state="disabled",
-        )
 
         self._refresh_results_table()
 
@@ -1600,31 +1594,48 @@ class WordstatGUI:
             text=str(count),
         )
 
-        if count:
+        self.results_count_label.configure(
+            text=f"Записей: {count}",
+        )
+
+        self.start_button.configure(
+            state="normal",
+        )
+
+        self.stop_button.configure(
+            state="disabled",
+        )
+
+        if count > 0:
             self.save_report_button.configure(
                 state="normal",
             )
-
-            self.status_var.set(
-                f"Готово. Найдено: {count}",
-            )
-
-            self._queue_log(f"Парсинг завершён. Найдено {count} подходящих запросов.")
-
-            self.tabview.set(
-                "Результаты",
-            )
-
         else:
             self.save_report_button.configure(
                 state="disabled",
             )
 
-            self.status_var.set(
-                "Готово. Подходящих запросов нет.",
-            )
+        if completed:
+            self.status_var.set(f"Готово. Найдено: {count}")
 
-            self._queue_log("Парсинг завершён. Подходящих запросов не найдено.")
+            self._queue_log(f"Парсинг полностью завершён. Найдено: {count}.")
+
+            if count > 0:
+                self.tabview.set(
+                    "Результаты",
+                )
+
+        else:
+            processed_text = self.card_processed.value_label.cget("text")
+
+            self.status_var.set(f"Остановлено. Обработано: {processed_text}")
+
+            self._queue_log(
+                "Парсинг остановлен. "
+                "Сохранённый прогресс "
+                "можно продолжить "
+                "следующим запуском."
+            )
 
         self.worker = None
 
