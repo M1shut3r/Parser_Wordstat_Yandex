@@ -4,11 +4,10 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from .client import PhraseRejectedError, WordstatClient
+from .client import PhraseRejectedError, ValidationStatus, WordstatClient
 from .config import ConfigManager
 from .models import ParseResult
 from .progress import ProgressManager
-
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int], None]
@@ -142,32 +141,44 @@ class WordstatProcessor:
             self.log("Нет настроенных аккаунтов.")
             return False
 
-        valid_any = False
+        usable_any = False
 
         for index, account in enumerate(self.config.accounts):
             if self.stop_event.is_set():
                 return False
 
-            ok, message = self.client.validate_account(
+            status, message = self.client.validate_account(
                 account.config.api_key,
                 account.config.folder_id,
+                stop_event=self.stop_event,
+                attempts=1,
             )
 
-            if ok:
-                valid_any = True
+            if self.stop_event.is_set():
+                return False
+
+            if status is ValidationStatus.OK:
+                usable_any = True
                 self.log(f"Аккаунт {index + 1}: проверка пройдена.")
-            elif message == "rate_limited":
-                valid_any = True
+            elif status is ValidationStatus.RATE_LIMITED:
+                usable_any = True
                 self.log(
                     f"Аккаунт {index + 1}: проверка пройдена, "
                     "но сейчас действует временный rate limit."
+                )
+            elif status is ValidationStatus.UNREACHABLE:
+                usable_any = True
+                self.log(
+                    f"Аккаунт {index + 1}: API не ответил вовремя "
+                    f"({message}). Ключ не считается неверным — "
+                    "продолжаем обработку."
                 )
             else:
                 self.log(
                     f"Аккаунт {index + 1}: ошибка проверки: {message}"
                 )
 
-        if not valid_any:
+        if not usable_any:
             self.log(
                 "Ни один аккаунт не прошёл проверку. "
                 "Проверьте API-Key и Folder ID."
@@ -181,19 +192,13 @@ class WordstatProcessor:
         processed = 0
         total = 0
         completed = False
+        processing_started = False
 
         try:
             try:
                 queries = self._load_queries()
             except OSError as error:
                 self.log(f"Ошибка чтения файла запросов: {error}")
-                return
-
-            if not self.config.accounts:
-                self.log("Невозможно начать обработку: не добавлен ни один аккаунт.")
-                return
-
-            if not self._validate_accounts():
                 return
 
             total = len(queries)
@@ -210,6 +215,11 @@ class WordstatProcessor:
 
             results = saved_results
             processed = start_index
+
+            self.progress_callback(
+                processed,
+                total,
+            )
 
             if start_index > 0:
                 self.log("Найден сохранённый прогресс.")
@@ -231,16 +241,20 @@ class WordstatProcessor:
                 self.log(f"Всего уникальных запросов: {total}.")
                 self.log("Начинаем обработку...")
 
+            if not self.config.accounts:
+                self.log("Невозможно начать обработку: не добавлен ни один аккаунт.")
+                return
+
             self.stats_callback(
                 self.config.settings.max_requests_per_hour,
                 1,
                 len(self.config.accounts),
             )
 
-            self.progress_callback(
-                processed,
-                total,
-            )
+            if not self._validate_accounts():
+                return
+
+            processing_started = True
 
             found = len(results)
 
@@ -370,12 +384,6 @@ class WordstatProcessor:
         except Exception as error:
             self.log(f"Критическая ошибка обработки: {error}")
 
-            self._save_progress(
-                next_index=processed,
-                total=total,
-                results=results,
-            )
-
         finally:
             try:
                 if completed:
@@ -384,23 +392,25 @@ class WordstatProcessor:
                     self.log("Обработка полностью завершена.")
                     self.log("Файл сохранённого прогресса удалён.")
 
-                elif self.stop_event.is_set():
+                elif processing_started:
                     self._save_progress(
                         next_index=processed,
                         total=total,
                         results=results,
                     )
 
-                    self.log(f"Обработка остановлена: {processed}/{total}.")
+                    if self.stop_event.is_set():
+                        self.log(f"Обработка остановлена: {processed}/{total}.")
+                    else:
+                        self.log(f"Обработка прервана: {processed}/{total}.")
+
+                elif self.stop_event.is_set():
+                    self.log("Запуск отменён.")
 
                 else:
-                    self._save_progress(
-                        next_index=processed,
-                        total=total,
-                        results=results,
+                    self.log(
+                        "Запуск не начат. Сохранённый прогресс не изменён."
                     )
-
-                    self.log(f"Обработка прервана: {processed}/{total}.")
 
             except Exception as error:
                 self.log(f"Ошибка сохранения состояния: {error}")

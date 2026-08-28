@@ -2,7 +2,9 @@
 import threading
 from types import SimpleNamespace
 
-from wordstat_parser.client import WordstatClient
+import requests
+
+from wordstat_parser.client import ValidationStatus, WordstatClient
 from wordstat_parser.models import AccountConfig, AccountState
 
 
@@ -57,3 +59,45 @@ def test_http_400_blocks_account_and_retries_same_request(monkeypatch):
     assert first.is_blocked is True
     assert first.requests_used == 0
     assert second.requests_used == 1
+
+
+def test_validate_account_timeout_is_unreachable(monkeypatch):
+    account = AccountState(AccountConfig("key", "folder"))
+    client, _ = make_client([account])
+    monkeypatch.setattr(client, "_reset_session", lambda: None)
+    monkeypatch.setattr("wordstat_parser.client.time.sleep", lambda *_: None)
+
+    def post(*args, **kwargs):
+        raise requests.exceptions.ReadTimeout(
+            "Read timed out. (read timeout=30)"
+        )
+
+    monkeypatch.setattr(client.session, "post", post)
+
+    status, message = client.validate_account("key", "folder")
+
+    assert status is ValidationStatus.UNREACHABLE
+    assert "Сетевая ошибка" in message
+
+
+def test_validate_account_retries_after_timeout(monkeypatch):
+    account = AccountState(AccountConfig("key", "folder"))
+    client, _ = make_client([account])
+    monkeypatch.setattr(client, "_reset_session", lambda: None)
+    monkeypatch.setattr("wordstat_parser.client.time.sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    def post(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.exceptions.ReadTimeout("timed out")
+        return FakeResponse(200, {"totalCount": 1})
+
+    monkeypatch.setattr(client.session, "post", post)
+
+    status, message = client.validate_account("key", "folder")
+
+    assert status is ValidationStatus.OK
+    assert message == "ok"
+    assert calls["n"] == 2

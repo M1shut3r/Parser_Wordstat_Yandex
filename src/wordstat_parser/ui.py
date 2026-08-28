@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from .client import WordstatClient
+from .client import ValidationStatus, WordstatClient
 from .config import ConfigManager
 from .exporter import export_to_excel
 from .models import ParseResult
@@ -406,7 +406,7 @@ class AccountDialog(ctk.CTkToplevel):
         )
 
         try:
-            success, status = client.validate_account(
+            status, message = client.validate_account(
                 api_key,
                 folder_id,
             )
@@ -418,20 +418,32 @@ class AccountDialog(ctk.CTkToplevel):
             self._on_account_validation_finished,
             api_key,
             folder_id,
-            success,
             status,
+            message,
         )
 
     def _on_account_validation_finished(
         self,
         api_key: str,
         folder_id: str,
-        success: bool,
-        status: str,
+        status: ValidationStatus,
+        message: str,
     ) -> None:
-        if not success:
+        if status not in {
+            ValidationStatus.OK,
+            ValidationStatus.RATE_LIMITED,
+        }:
+            if status is ValidationStatus.UNREACHABLE:
+                error_text = (
+                    "Не удалось связаться с Wordstat API (таймаут). "
+                    "Аккаунт не добавлен — повторите проверку. "
+                    "Это не значит, что ключ неверный."
+                )
+            else:
+                error_text = message
+
             self.status_label.configure(
-                text=status,
+                text=error_text,
                 text_color=COLORS["danger"],
             )
 
@@ -461,7 +473,7 @@ class AccountDialog(ctk.CTkToplevel):
 
             return
 
-        if status == "rate_limited":
+        if status is ValidationStatus.RATE_LIMITED:
             message = "Аккаунт добавлен. API сейчас вернул HTTP 429."
         else:
             message = "Аккаунт успешно проверен и добавлен."
@@ -1409,12 +1421,6 @@ class WordstatGUI:
 
         self.save_report_button.configure(
             state="disabled",
-        )
-
-        self.progress_bar.set(0)
-
-        self.progress_label.configure(
-            text="0 / 0",
         )
 
         self.status_var.set(

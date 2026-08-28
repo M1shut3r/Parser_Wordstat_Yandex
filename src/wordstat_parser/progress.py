@@ -44,6 +44,9 @@ class ProgressManager:
         total: int,
         results: list[ParseResult],
     ) -> None:
+        if total <= 0:
+            return
+
         data = {
             "version": self.VERSION,
             "queries_file": str(self.queries_file),

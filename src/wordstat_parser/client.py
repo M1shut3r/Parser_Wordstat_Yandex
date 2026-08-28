@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 
 import requests
@@ -13,9 +14,15 @@ import requests
 from .config import ConfigManager
 from .models import AccountState
 
-
 LogCallback = Callable[[str], None]
 StatsCallback = Callable[[int, int, int], None]
+
+
+class ValidationStatus(StrEnum):
+    OK = "ok"
+    RATE_LIMITED = "rate_limited"
+    UNREACHABLE = "unreachable"
+    INVALID = "invalid"
 
 
 class PhraseRejectedError(Exception):
@@ -103,8 +110,11 @@ class BlockLogger:
 class WordstatClient:
     BASE_URL = "https://searchapi.api.cloud.yandex.net/v2/wordstat/topRequests"
 
-    REQUEST_TIMEOUT = 15
-    VALIDATION_TIMEOUT = 10
+    CONNECT_TIMEOUT = 10.0
+    READ_TIMEOUT = 30.0
+    REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
+    VALIDATION_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
+    VALIDATION_ATTEMPTS = 2
 
     # Настоящая часовая блокировка — только для авторизационных ошибок (401/403),
     # это реальный признак нерабочего ключа/квоты, а не кратковременного троттлинга.
@@ -149,6 +159,15 @@ class WordstatClient:
 
     def close(self) -> None:
         self.session.close()
+
+    def _reset_session(self) -> None:
+        old_session = self.session
+        self.session = requests.Session()
+
+        try:
+            old_session.close()
+        except Exception:
+            pass
 
     def _reset_if_expired(
         self,
@@ -420,11 +439,12 @@ class WordstatClient:
     def _build_payload(
         phrase: str,
         folder_id: str,
+        num_phrases: str = "10",
     ) -> dict:
         return {
             "folderId": folder_id,
             "phrase": phrase,
-            "numPhrases": "10",
+            "numPhrases": num_phrases,
             "regions": ["225"],
             "devices": ["DEVICE_ALL"],
         }
@@ -473,6 +493,7 @@ class WordstatClient:
             return response, None
 
         except requests.RequestException as error:
+            self._reset_session()
             return None, error
 
     @classmethod
@@ -855,19 +876,21 @@ class WordstatClient:
         self,
         api_key: str,
         folder_id: str,
-    ) -> tuple[bool, str]:
+        stop_event: threading.Event | None = None,
+        attempts: int | None = None,
+    ) -> tuple[ValidationStatus, str]:
         api_key = api_key.strip()
         folder_id = folder_id.strip()
 
         if not api_key:
             return (
-                False,
+                ValidationStatus.INVALID,
                 "API Key не указан.",
             )
 
         if not folder_id:
             return (
-                False,
+                ValidationStatus.INVALID,
                 "Folder ID не указан.",
             )
 
@@ -878,40 +901,82 @@ class WordstatClient:
             }
         except ValueError as error:
             return (
-                False,
+                ValidationStatus.INVALID,
                 str(error),
             )
 
         payload = self._build_payload(
             phrase="тест",
             folder_id=folder_id,
+            num_phrases="1",
         )
 
-        try:
-            response = self.session.post(
-                self.BASE_URL,
-                headers=headers,
-                json=payload,
-                timeout=self.VALIDATION_TIMEOUT,
-            )
-        except requests.RequestException as error:
+        last_error: Exception | None = None
+        response: requests.Response | None = None
+        max_attempts = (
+            self.VALIDATION_ATTEMPTS if attempts is None else max(1, attempts)
+        )
+
+        for attempt in range(1, max_attempts + 1):
+            if stop_event is not None and stop_event.is_set():
+                return (
+                    ValidationStatus.INVALID,
+                    "Проверка прервана.",
+                )
+
+            try:
+                response = self.session.post(
+                    self.BASE_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.VALIDATION_TIMEOUT,
+                )
+                break
+            except requests.RequestException as error:
+                last_error = error
+                self._reset_session()
+
+                if attempt >= max_attempts:
+                    return (
+                        ValidationStatus.UNREACHABLE,
+                        f"Сетевая ошибка: {error}",
+                    )
+
+                delay = min(2.0 * attempt, 5.0)
+
+                if stop_event is not None:
+                    if stop_event.wait(delay):
+                        return (
+                            ValidationStatus.INVALID,
+                            "Проверка прервана.",
+                        )
+                else:
+                    time.sleep(delay)
+
+        if response is None:
             return (
-                False,
-                f"Сетевая ошибка: {error}",
+                ValidationStatus.UNREACHABLE,
+                f"Сетевая ошибка: {last_error}",
             )
 
         if response.status_code == 200:
-            return True, "ok"
+            return ValidationStatus.OK, "ok"
 
         if response.status_code == 429:
-            return True, "rate_limited"
+            return ValidationStatus.RATE_LIMITED, "rate_limited"
 
         message = self._get_error_message(response).strip()
 
         if not message:
             message = "Неизвестная ошибка API."
 
+        if 500 <= response.status_code < 600:
+            return (
+                ValidationStatus.UNREACHABLE,
+                f"HTTP {response.status_code}: {message[:300]}",
+            )
+
         return (
-            False,
+            ValidationStatus.INVALID,
             f"HTTP {response.status_code}: {message[:300]}",
         )
