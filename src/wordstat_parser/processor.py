@@ -108,11 +108,9 @@ class WordstatProcessor:
             self.log(f"Не удалось загрузить прогресс: {error}")
             return 0, []
 
-    def _skip_query(self, query: str) -> None:
-        self.log(
-            f'Фраза "{query}" пропущена: стабильно отклоняется API '
-            "(см. errors_log.jsonl для точной причины)."
-        )
+    def _skip_query(self, query: str, reason: str | None = None) -> None:
+        details = reason or "превышена максимальная длина фразы Wordstat API"
+        self.log(f'Фраза "{query}" пропущена: {details}.')
 
         try:
             skipped_file = self.queries_file.with_name("skipped_queries.txt")
@@ -274,8 +272,8 @@ class WordstatProcessor:
                         query,
                         self.stop_event,
                     )
-                except PhraseRejectedError:
-                    self._skip_query(query)
+                except PhraseRejectedError as error:
+                    self._skip_query(query, error.reason)
 
                     processed = index + 1
                     self.progress_callback(processed, total)
@@ -303,13 +301,16 @@ class WordstatProcessor:
                 quoted_count = 0
 
                 if normal_count > self.config.settings.min_normal_count:
+                    self.log(
+                        f"  обычный={normal_count}, проверяем запрос в кавычках..."
+                    )
                     try:
                         quoted_count = self.client.get_count(
                             f'"{query}"',
                             self.stop_event,
                         )
-                    except PhraseRejectedError:
-                        self._skip_query(query)
+                    except PhraseRejectedError as error:
+                        self._skip_query(query, error.reason)
 
                         processed = index + 1
                         self.progress_callback(processed, total)

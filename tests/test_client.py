@@ -101,3 +101,46 @@ def test_validate_account_retries_after_timeout(monkeypatch):
     assert status is ValidationStatus.OK
     assert message == "ok"
     assert calls["n"] == 2
+
+
+def test_timeouts_retry_until_success(monkeypatch):
+    account = AccountState(AccountConfig("key", "folder"))
+    client, _ = make_client([account])
+    monkeypatch.setattr(client, "_reset_session", lambda: None)
+    monkeypatch.setattr(client, "_calculate_backoff", lambda attempt: 0)
+
+    calls = {"n": 0}
+
+    def post(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 4:
+            raise requests.exceptions.ReadTimeout("timed out")
+        return FakeResponse(200, {"totalCount": "42"})
+
+    monkeypatch.setattr(client.session, "post", post)
+
+    assert client.get_count("mauritius holiday", threading.Event()) == 42
+    assert calls["n"] == 4
+    assert account.requests_used == 1
+
+
+def test_http_400_rate_limit_retries_on_next_account(monkeypatch):
+    first = AccountState(AccountConfig("key1", "folder1"))
+    second = AccountState(AccountConfig("key2", "folder2"))
+    client, _ = make_client([first, second])
+    responses = iter(
+        [
+            FakeResponse(400, {"message": "rate limit"}),
+            FakeResponse(200, {"totalCount": "77"}),
+        ]
+    )
+
+    def post(*args, **kwargs):
+        return next(responses)
+
+    monkeypatch.setattr(client.session, "post", post)
+
+    assert client.get_count("mauritius holiday", threading.Event()) == 77
+    assert first.is_blocked is True
+    assert first.requests_used == 0
+    assert second.requests_used == 1
