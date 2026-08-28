@@ -5,7 +5,7 @@
 [![API](https://img.shields.io/badge/API-Yandex%20Wordstat-orange.svg)](https://aistudio.yandex.ru/platform/folders)
 [![GUI](https://img.shields.io/badge/GUI-CustomTkinter-purple.svg)](https://github.com/TomSchimansky/CustomTkinter)
 
-Desktop application for mass parsing search queries via the Yandex Wordstat API. Built with Python using CustomTkinter. Supports multiple accounts, automatic rate-limit management (HTTP 429), threshold filtering, and exporting results to Excel.
+Desktop application for mass parsing search queries via the Yandex Cloud Wordstat API. Built with Python using CustomTkinter. Supports multiple accounts, automatic handling of the configured hourly request limit, threshold filtering, progress recovery, and exporting results to Excel.
 
 ![Wordstat Parser Demo](assets/video.gif)
 
@@ -36,8 +36,21 @@ Launch the app from anywhere in your terminal:
    ```
 Or run as a module:
    ```bash
-      python main.py
+      python -m wordstat_parser
    ```
+
+### API limits and retry behavior
+
+The parser treats an API result and an API limit as different states:
+
+- `HTTP 200` with `totalCount = 0` is a successful result. The query is processed normally and the value `0` is preserved.
+- `HTTP 200` with `totalCount > 0` is also a successful result.
+- `HTTP 400` is treated by this application as an exhausted request limit. The current query is not marked as processed and `0` is not substituted for the missing result.
+- When another configured account is available, the parser switches to it and retries the same query.
+- When all accounts are exhausted, the parser waits for the hourly limit reset without sending API requests, then retries the same query.
+- If processing is stopped or a query cannot be completed, its index is not advanced, so the saved progress can resume from that query.
+
+The application-level hourly limit is configured by `settings.max_requests_per_hour` in `config.json`. The Yandex Cloud Search API documentation currently lists a Wordstat limit of 100 statistics requests per hour and 10 requests per second.
 
 ### Running Tests
 ```bash
