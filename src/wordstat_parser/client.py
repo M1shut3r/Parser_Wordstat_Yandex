@@ -13,8 +13,42 @@ import requests
 from .config import ConfigManager
 from .models import AccountState
 
+
 LogCallback = Callable[[str], None]
 StatsCallback = Callable[[int, int, int], None]
+
+
+class PhraseRejectedError(Exception):
+    """Фраза стабильно отклоняется API всеми аккаунтами (не троттлинг)."""
+
+
+class ErrorLogger:
+    """Сохраняет полный текст ответов API с ошибками для диагностики."""
+
+    def __init__(self, log_file: str | Path = "errors_log.jsonl") -> None:
+        self.log_file = Path(log_file)
+
+    def log(
+        self,
+        *,
+        phrase: str,
+        account_index: int,
+        status_code: int,
+        message: str,
+    ) -> None:
+        entry = {
+            "at": datetime.now().isoformat(),
+            "phrase": phrase,
+            "account_index": account_index,
+            "status_code": status_code,
+            "message": message,
+        }
+
+        try:
+            with self.log_file.open("a", encoding="utf-8") as file:
+                file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
 
 class BlockLogger:
@@ -34,10 +68,8 @@ class BlockLogger:
         try:
             if self.log_file.exists():
                 data = json.loads(self.log_file.read_text(encoding="utf-8"))
-
                 if isinstance(data, list):
                     history = data
-
         except (
             OSError,
             json.JSONDecodeError,
@@ -74,7 +106,20 @@ class WordstatClient:
     REQUEST_TIMEOUT = 15
     VALIDATION_TIMEOUT = 10
 
+    # Настоящая часовая блокировка — только для авторизационных ошибок (401/403),
+    # это реальный признак нерабочего ключа/квоты, а не кратковременного троттлинга.
     ACCOUNT_BLOCK_SECONDS = 3600
+
+    # 400/429 чаще всего — кратковременный троттлинг по IP/скорости, а не почасовая
+    # квота, поэтому блокируем аккаунт ненадолго и пробуем снова.
+    THROTTLE_BLOCK_SECONDS = 90
+
+    # Если фраза получает 400 от ВСЕХ аккаунтов столько кругов подряд — считаем,
+    # что дело не в троттлинге, а в самой фразе, и пропускаем именно её.
+    MAX_PHRASE_400_ROUNDS = 2
+
+    # Официальный лимит Wordstat API для поля phrase.
+    MAX_PHRASE_LENGTH = 400
 
     RETRY_BASE_DELAY = 2.0
     RETRY_MAX_DELAY = 60.0
@@ -92,10 +137,11 @@ class WordstatClient:
         self.current_index = 0
 
         self.block_logger = BlockLogger()
+        self.error_logger = ErrorLogger()
 
         self.session = requests.Session()
-
         self._lock = threading.Lock()
+        self._last_request_at = 0.0
 
     @property
     def accounts(self) -> list[AccountState]:
@@ -116,7 +162,6 @@ class WordstatClient:
         account: AccountState,
     ) -> bool:
         self._reset_if_expired(account)
-
         return account.requests_used < self.config.settings.max_requests_per_hour
 
     def _is_account_available(
@@ -148,7 +193,6 @@ class WordstatClient:
         )
 
         account = self.accounts[self.current_index]
-
         self._reset_if_expired(account)
 
         remaining = max(
@@ -173,7 +217,6 @@ class WordstatClient:
             len(self.accounts) + 1,
         ):
             index = (previous_index + offset) % len(self.accounts)
-
             account = self.accounts[index]
 
             if not self._is_account_available(account):
@@ -186,7 +229,6 @@ class WordstatClient:
             )
 
             self._update_stats()
-
             return True
 
         return False
@@ -200,9 +242,7 @@ class WordstatClient:
                 continue
 
             self.current_index = index
-
             self._update_stats()
-
             return True
 
         return False
@@ -211,17 +251,21 @@ class WordstatClient:
         self,
         index: int,
         reason: str,
+        block_seconds: int | None = None,
     ) -> None:
         if not 0 <= index < len(self.accounts):
             return
 
         account = self.accounts[index]
-
         account.is_blocked = True
 
-        account.blocked_until = datetime.now() + timedelta(
-            seconds=self.ACCOUNT_BLOCK_SECONDS
+        seconds = (
+            self.ACCOUNT_BLOCK_SECONDS
+            if block_seconds is None
+            else block_seconds
         )
+
+        account.blocked_until = datetime.now() + timedelta(seconds=seconds)
 
         self.block_logger.log_block(
             index,
@@ -229,7 +273,6 @@ class WordstatClient:
         )
 
         self.log(f"Аккаунт {index + 1} временно заблокирован: {reason}")
-
         self._update_stats()
 
     def _get_account_available_time(
@@ -256,7 +299,6 @@ class WordstatClient:
 
         for account in self.accounts:
             available_time = self._get_account_available_time(account)
-
             if available_time is not None:
                 available_times.append(available_time)
 
@@ -303,11 +345,9 @@ class WordstatClient:
             if wait_seconds <= 0:
                 for account in self.accounts:
                     self._reset_if_expired(account)
-
                 continue
 
             minutes = int(wait_seconds // 60)
-
             seconds = int(wait_seconds % 60)
 
             self.log(
@@ -349,7 +389,6 @@ class WordstatClient:
                     continue
 
                 self.current_index = index
-
                 self._update_stats()
 
                 return account
@@ -359,12 +398,21 @@ class WordstatClient:
 
         return None
 
+    @staticmethod
+    def _build_auth_header(api_key: str) -> str:
+        api_key = api_key.strip()
+
+        if not api_key:
+            raise ValueError("API Key не может быть пустым.")
+
+        return f"Api-Key {api_key}"
+
     def _build_headers(
         self,
         account: AccountState,
     ) -> dict[str, str]:
         return {
-            "Authorization": (f"Api-Key {account.config.api_key}"),
+            "Authorization": self._build_auth_header(account.config.api_key),
             "Content-Type": "application/json",
         }
 
@@ -381,14 +429,36 @@ class WordstatClient:
             "devices": ["DEVICE_ALL"],
         }
 
+    def _wait_request_interval(
+        self,
+        stop_event: threading.Event,
+    ) -> bool:
+        interval = max(0.1, float(self.config.settings.request_delay))
+
+        with self._lock:
+            now = time.monotonic()
+            wait_for = interval - (now - self._last_request_at)
+
+        if wait_for > 0 and stop_event.wait(wait_for):
+            return False
+
+        with self._lock:
+            self._last_request_at = time.monotonic()
+
+        return not stop_event.is_set()
+
     def _post(
         self,
         account: AccountState,
         phrase: str,
+        stop_event: threading.Event,
     ) -> tuple[
         requests.Response | None,
         Exception | None,
     ]:
+        if not self._wait_request_interval(stop_event):
+            return None, None
+
         try:
             response = self.session.post(
                 self.BASE_URL,
@@ -460,14 +530,22 @@ class WordstatClient:
         phrase: str,
         stop_event: threading.Event,
     ) -> int | None:
-        phrase = phrase.strip()
+        phrase = " ".join(phrase.strip().split())
 
         if not phrase:
             return 0
 
+        if len(phrase) > self.MAX_PHRASE_LENGTH:
+            raise PhraseRejectedError(phrase)
+
         network_retry = 0
         server_retry = 0
         api_retry = 0
+
+        phrase_400_accounts: set[int] = set()
+        phrase_400_rounds = 0
+
+        auth_error_accounts: set[int] = set()
 
         while not stop_event.is_set():
             account = self._prepare_account(stop_event)
@@ -478,11 +556,11 @@ class WordstatClient:
             response, network_error = self._post(
                 account,
                 phrase,
+                stop_event,
             )
 
             if network_error is not None:
                 network_retry += 1
-
                 retry_delay = self._calculate_backoff(network_retry)
 
                 self.log(
@@ -502,7 +580,6 @@ class WordstatClient:
 
             if response is None:
                 network_retry += 1
-
                 retry_delay = self._calculate_backoff(network_retry)
 
                 self.log(
@@ -522,10 +599,8 @@ class WordstatClient:
             if response.status_code == 200:
                 try:
                     data = response.json()
-
                 except ValueError as error:
                     api_retry += 1
-
                     retry_delay = self._calculate_backoff(api_retry)
 
                     self.log(
@@ -550,13 +625,11 @@ class WordstatClient:
                             0,
                         )
                     )
-
                 except (
                     TypeError,
                     ValueError,
                 ) as error:
                     api_retry += 1
-
                     retry_delay = self._calculate_backoff(api_retry)
 
                     self.log(
@@ -575,26 +648,55 @@ class WordstatClient:
                     continue
 
                 account.requests_used += 1
-
                 self._update_stats()
 
                 return count
 
             if response.status_code == 400:
+                error_message = self._get_error_message(response).strip()
+                safe_error_message = error_message[:300] or "пустой ответ"
+
+                self.error_logger.log(
+                    phrase=phrase,
+                    account_index=self.current_index,
+                    status_code=400,
+                    message=error_message or "пустой ответ",
+                )
+
+                phrase_400_accounts.add(self.current_index)
+
                 self._block_account(
                     self.current_index,
-                    "HTTP 400: лимит запросов исчерпан",
+                    f"HTTP 400: {safe_error_message}",
+                    block_seconds=self.THROTTLE_BLOCK_SECONDS,
                 )
 
                 self.log(
                     f"Аккаунт "
                     f"{self.current_index + 1} "
                     "получил HTTP 400. "
-                    "Считаем лимит "
-                    "запросов исчерпанным. "
+                    f"Ответ API: {safe_error_message}. "
+                    f"Короткая пауза ({self.THROTTLE_BLOCK_SECONDS} сек), "
+                    "полный текст сохранён в errors_log.jsonl. "
                     "Повторный API-запрос "
                     "НЕ выполняется."
                 )
+
+                if self.accounts and phrase_400_accounts >= {
+                    i for i in range(len(self.accounts))
+                }:
+                    phrase_400_rounds += 1
+                    phrase_400_accounts.clear()
+
+                    if phrase_400_rounds >= self.MAX_PHRASE_400_ROUNDS:
+                        self.log(
+                            f'Фраза "{phrase}" получила HTTP 400 от ВСЕХ аккаунтов '
+                            f"{phrase_400_rounds} раза подряд. Похоже, дело не в "
+                            "троттлинге, а в самой фразе (см. errors_log.jsonl). "
+                            "Пропускаем эту фразу и продолжаем со следующей."
+                        )
+
+                        raise PhraseRejectedError(phrase)
 
                 if self._switch_account():
                     network_retry = 0
@@ -602,7 +704,7 @@ class WordstatClient:
                     api_retry = 0
                     continue
 
-                self.log("Все аккаунты исчерпали лимит. Новых API-запросов не будет.")
+                self.log("Все аккаунты временно на паузе. Ожидание.")
 
                 if self._wait_for_available_account(stop_event):
                     network_retry = 0
@@ -613,15 +715,26 @@ class WordstatClient:
                 return None
 
             if response.status_code == 429:
+                error_message = self._get_error_message(response).strip()
+
+                self.error_logger.log(
+                    phrase=phrase,
+                    account_index=self.current_index,
+                    status_code=429,
+                    message=error_message or "пустой ответ",
+                )
+
                 self._block_account(
                     self.current_index,
                     "HTTP 429: слишком много запросов",
+                    block_seconds=self.THROTTLE_BLOCK_SECONDS,
                 )
 
                 self.log(
                     f"Аккаунт "
                     f"{self.current_index + 1} "
                     "получил HTTP 429. "
+                    f"Короткая пауза ({self.THROTTLE_BLOCK_SECONDS} сек). "
                     "Повторный запрос "
                     "на этом аккаунте "
                     "не выполняется."
@@ -647,9 +760,19 @@ class WordstatClient:
                 401,
                 403,
             ):
+                error_message = self._get_error_message(response).strip()
+                safe_error_message = error_message[:300] or "пустой ответ"
+
+                self.error_logger.log(
+                    phrase=phrase,
+                    account_index=self.current_index,
+                    status_code=response.status_code,
+                    message=error_message or "пустой ответ",
+                )
+
                 self._block_account(
                     self.current_index,
-                    (f"HTTP {response.status_code}: ошибка авторизации"),
+                    f"HTTP {response.status_code}: ошибка авторизации: {safe_error_message}",
                 )
 
                 self.log(
@@ -660,6 +783,18 @@ class WordstatClient:
                     "Переключение "
                     "аккаунта."
                 )
+
+                auth_error_accounts.add(self.current_index)
+
+                if self.accounts and auth_error_accounts >= {
+                    i for i in range(len(self.accounts))
+                }:
+                    self.log(
+                        "Все аккаунты получили ошибку авторизации. "
+                        "Проверьте API-Key, срок действия ключа, "
+                        "Folder ID и права сервисного аккаунта."
+                    )
+                    return None
 
                 if self._switch_account():
                     network_retry = 0
@@ -677,7 +812,6 @@ class WordstatClient:
 
             if 500 <= response.status_code < 600:
                 server_retry += 1
-
                 retry_delay = self._calculate_backoff(server_retry)
 
                 self.log(
@@ -699,7 +833,6 @@ class WordstatClient:
             error_message = self._get_error_message(response)
 
             api_retry += 1
-
             retry_delay = self._calculate_backoff(api_retry)
 
             self.log(
@@ -738,10 +871,16 @@ class WordstatClient:
                 "Folder ID не указан.",
             )
 
-        headers = {
-            "Authorization": (f"Api-Key {api_key}"),
-            "Content-Type": "application/json",
-        }
+        try:
+            headers = {
+                "Authorization": self._build_auth_header(api_key),
+                "Content-Type": "application/json",
+            }
+        except ValueError as error:
+            return (
+                False,
+                str(error),
+            )
 
         payload = self._build_payload(
             phrase="тест",
@@ -755,7 +894,6 @@ class WordstatClient:
                 json=payload,
                 timeout=self.VALIDATION_TIMEOUT,
             )
-
         except requests.RequestException as error:
             return (
                 False,
@@ -775,5 +913,5 @@ class WordstatClient:
 
         return (
             False,
-            (f"HTTP {response.status_code}: {message[:300]}"),
+            f"HTTP {response.status_code}: {message[:300]}",
         )
