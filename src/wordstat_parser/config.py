@@ -24,7 +24,6 @@ class ConfigManager:
             data = json.load(file)
 
         settings_data = data.get("settings", {})
-
         allowed_settings = AppSettings.__annotations__.keys()
 
         self.settings = AppSettings(
@@ -38,8 +37,8 @@ class ConfigManager:
         self.accounts.clear()
 
         for account in data.get("accounts", []):
-            api_key = account.get("api_key")
-            folder_id = account.get("folder_id")
+            api_key = str(account.get("api_key") or "").strip()
+            folder_id = str(account.get("folder_id") or "").strip()
 
             if not api_key or not folder_id:
                 continue
@@ -80,6 +79,15 @@ class ConfigManager:
         api_key: str,
         folder_id: str,
     ) -> None:
+        api_key = api_key.strip()
+        folder_id = folder_id.strip()
+
+        if not api_key:
+            raise ValueError("API Key не может быть пустым.")
+
+        if not folder_id:
+            raise ValueError("Folder ID не может быть пустым.")
+
         self.accounts.append(
             AccountState(
                 config=AccountConfig(
@@ -96,6 +104,37 @@ class ConfigManager:
             return False
 
         self.accounts.pop(index)
+        self.save()
+
+        return True
+
+    def update_account(
+        self,
+        index: int,
+        api_key: str | None = None,
+        folder_id: str | None = None,
+    ) -> bool:
+        if not 0 <= index < len(self.accounts):
+            return False
+
+        account = self.accounts[index]
+
+        if api_key is not None:
+            api_key = api_key.strip()
+
+            if not api_key:
+                raise ValueError("API Key не может быть пустым.")
+
+            account.config.api_key = api_key
+
+        if folder_id is not None:
+            folder_id = folder_id.strip()
+
+            if not folder_id:
+                raise ValueError("Folder ID не может быть пустым.")
+
+            account.config.folder_id = folder_id
+
         self.save()
 
         return True
