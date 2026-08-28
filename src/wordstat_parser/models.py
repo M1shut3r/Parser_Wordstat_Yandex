@@ -38,7 +38,7 @@ class AccountState:
 @dataclass(slots=True)
 class AppSettings:
     max_requests_per_hour: int = 100
-    request_delay: float = 0.1
+    request_delay: float = 1.0
     min_normal_count: int = 500
     min_quoted_count: int = 30
 
