@@ -19,6 +19,8 @@ Thumbs.db
 
 config.json
 block_history.json
+errors_log.jsonl
+skipped_queries.txt
 
 *.log
 
