@@ -4,10 +4,11 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from .client import WordstatClient
+from .client import PhraseRejectedError, WordstatClient
 from .config import ConfigManager
 from .models import ParseResult
 from .progress import ProgressManager
+
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int], None]
@@ -77,7 +78,6 @@ class WordstatProcessor:
                 result,
                 found_count,
             )
-
         except Exception as error:
             self.log(f"Ошибка обновления интерфейса: {error}")
 
@@ -93,7 +93,6 @@ class WordstatProcessor:
                 total=total,
                 results=results,
             )
-
         except Exception as error:
             self.log(f"Не удалось сохранить прогресс: {error}")
 
@@ -106,11 +105,24 @@ class WordstatProcessor:
     ]:
         try:
             return self.progress_manager.load(total)
-
         except Exception as error:
             self.log(f"Не удалось загрузить прогресс: {error}")
-
             return 0, []
+
+    def _skip_query(self, query: str) -> None:
+        self.log(
+            f'Фраза "{query}" пропущена: стабильно отклоняется API '
+            "(см. errors_log.jsonl для точной причины)."
+        )
+
+        try:
+            skipped_file = self.queries_file.with_name("skipped_queries.txt")
+
+            with skipped_file.open("a", encoding="utf-8") as file:
+                file.write(query + "\n")
+
+        except OSError as error:
+            self.log(f"Не удалось сохранить пропущенную фразу: {error}")
 
     def _notify_finish(
         self,
@@ -122,13 +134,50 @@ class WordstatProcessor:
                 results,
                 completed,
             )
-
         except Exception as error:
             self.log(f"Ошибка callback завершения: {error}")
 
+    def _validate_accounts(self) -> bool:
+        if not self.config.accounts:
+            self.log("Нет настроенных аккаунтов.")
+            return False
+
+        valid_any = False
+
+        for index, account in enumerate(self.config.accounts):
+            if self.stop_event.is_set():
+                return False
+
+            ok, message = self.client.validate_account(
+                account.config.api_key,
+                account.config.folder_id,
+            )
+
+            if ok:
+                valid_any = True
+                self.log(f"Аккаунт {index + 1}: проверка пройдена.")
+            elif message == "rate_limited":
+                valid_any = True
+                self.log(
+                    f"Аккаунт {index + 1}: проверка пройдена, "
+                    "но сейчас действует временный rate limit."
+                )
+            else:
+                self.log(
+                    f"Аккаунт {index + 1}: ошибка проверки: {message}"
+                )
+
+        if not valid_any:
+            self.log(
+                "Ни один аккаунт не прошёл проверку. "
+                "Проверьте API-Key и Folder ID."
+            )
+            return False
+
+        return True
+
     def run(self) -> None:
         results: list[ParseResult] = []
-
         processed = 0
         total = 0
         completed = False
@@ -136,7 +185,6 @@ class WordstatProcessor:
         try:
             try:
                 queries = self._load_queries()
-
             except OSError as error:
                 self.log(f"Ошибка чтения файла запросов: {error}")
                 return
@@ -145,11 +193,13 @@ class WordstatProcessor:
                 self.log("Невозможно начать обработку: не добавлен ни один аккаунт.")
                 return
 
+            if not self._validate_accounts():
+                return
+
             total = len(queries)
 
             if total == 0:
                 self.log("Файл запросов пуст.")
-
                 completed = True
                 return
 
@@ -163,9 +213,7 @@ class WordstatProcessor:
 
             if start_index > 0:
                 self.log("Найден сохранённый прогресс.")
-
                 self.log(f"Продолжаем с запроса {start_index + 1}/{total}.")
-
                 self.log(f"Восстановлено результатов: {len(results)}.")
 
                 for (
@@ -179,10 +227,8 @@ class WordstatProcessor:
                         result,
                         result_index,
                     )
-
             else:
                 self.log(f"Всего уникальных запросов: {total}.")
-
                 self.log("Начинаем обработку...")
 
             self.stats_callback(
@@ -209,45 +255,70 @@ class WordstatProcessor:
 
                 self.log(f"[{index + 1}/{total}] Обработка: {query}")
 
-                normal_count = self.client.get_count(
-                    query,
-                    self.stop_event,
-                )
+                try:
+                    normal_count = self.client.get_count(
+                        query,
+                        self.stop_event,
+                    )
+                except PhraseRejectedError:
+                    self._skip_query(query)
+
+                    processed = index + 1
+                    self.progress_callback(processed, total)
+
+                    self._save_progress(
+                        next_index=processed,
+                        total=total,
+                        results=results,
+                    )
+
+                    continue
 
                 if normal_count is None:
                     if self.stop_event.is_set():
                         break
 
                     self.log(
-                        f"Не удалось получить "
-                        f'результат для "{query}". '
-                        "Попытка будет "
-                        "повторена автоматически."
+                        f"Не удалось завершить обработку "
+                        f'запроса "{query}". Текущая запись не помечена '
+                        "как обработанная и останется в прогрессе."
                     )
 
-                    continue
+                    break
 
                 quoted_count = 0
 
                 if normal_count > self.config.settings.min_normal_count:
-                    quoted_count = self.client.get_count(
-                        f'"{query}"',
-                        self.stop_event,
-                    )
+                    try:
+                        quoted_count = self.client.get_count(
+                            f'"{query}"',
+                            self.stop_event,
+                        )
+                    except PhraseRejectedError:
+                        self._skip_query(query)
+
+                        processed = index + 1
+                        self.progress_callback(processed, total)
+
+                        self._save_progress(
+                            next_index=processed,
+                            total=total,
+                            results=results,
+                        )
+
+                        continue
 
                     if quoted_count is None:
                         if self.stop_event.is_set():
                             break
 
                         self.log(
-                            f"Не удалось получить "
-                            f'результат для "{query}" '
-                            "в кавычках. "
-                            "Попытка будет "
-                            "повторена автоматически."
+                            f"Не удалось завершить обработку "
+                            f'запроса "{query}" в кавычках. Текущая запись '
+                            "не помечена как обработанная и останется в прогрессе."
                         )
 
-                        continue
+                        break
 
                 result = ParseResult(
                     query=query,
@@ -262,7 +333,6 @@ class WordstatProcessor:
 
                 if is_valid:
                     results.append(result)
-
                     found += 1
 
                     self.log(
@@ -273,7 +343,6 @@ class WordstatProcessor:
                         result,
                         found,
                     )
-
                 else:
                     self.log(
                         "  -> Не подходит: "
@@ -313,7 +382,6 @@ class WordstatProcessor:
                     self.progress_manager.remove()
 
                     self.log("Обработка полностью завершена.")
-
                     self.log("Файл сохранённого прогресса удалён.")
 
                 elif self.stop_event.is_set():
