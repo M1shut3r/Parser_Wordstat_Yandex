@@ -161,8 +161,3 @@ class ProgressManager:
 
         except OSError:
             pass
-        try:
-            self.progress_file.unlink(missing_ok=True)
-
-        except OSError:
-            pass
